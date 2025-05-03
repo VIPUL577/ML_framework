@@ -30,7 +30,7 @@ Seera is a minimal, educational deep learning framework built from scratch in Py
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/seera.git
+git clone https://github.com/VIPUL577/Seera.git
 cd seera
 # (Optional) Install dependencies
 pip install numpy numba matplotlib tensorflow
