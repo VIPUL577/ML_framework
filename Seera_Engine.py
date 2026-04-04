@@ -1,213 +1,281 @@
 import numpy as np
-from numba import njit,jit
 from Seera_init import tensor as Tensor
 
-#######AUTOGRAD 4 Neural Network########
+# ─────────────────────────────────────────────────────────────
+# Autograd engine for neural networks (batch-aware)
+# ─────────────────────────────────────────────────────────────
 class autograd4nn:
-    
+
     def __init__(self, hook):
         self.hook = hook
         self.backward()
-    @staticmethod   
-    @njit
-    def im2col(X, filter_height, filter_width, stride=1, pad=0):
+
+    # ─── Broadcast gradient reduction ────────────────────────
+    @staticmethod
+    def _reduce_grad(grad, target_shape):
+        """Reduce *grad* to *target_shape* by summing over broadcast dims.
+        Handles the common case where bias (1, out) was broadcast to (N, out)
+        and the gradient needs to be summed over the batch dim."""
+        if grad.shape == target_shape:
+            return grad
+        ndim_diff = grad.ndim - len(target_shape)
+        padded = (1,) * ndim_diff + tuple(target_shape)
+        reduce_axes = tuple(i for i, s in enumerate(padded) if s == 1)
+        out = grad.sum(axis=reduce_axes, keepdims=True)
+        if ndim_diff > 0:
+            out = out.reshape(target_shape)
+        return out
+
+    # ─── Conv backward (batched) ─────────────────────────────
+    def conv_backward(self, dO, X, W, stride=1, padding=0):
+        """Batched conv backward.
+        dO: (N, F, OH, OW) — gradient of output
+        X:  (N, C, H, W)   — input
+        W:  (F, C, KH, KW) — filters
+        Returns dX (N, C, H, W), dW (F, C, KH, KW)
         """
-        X: input of shape (C, H, W)
-        Returns:
-            cols: 2D array of shape (C * filter_height * filter_width, number_of_patches)
+        if X.ndim == 3:
+            X = X[np.newaxis]
+        if dO.ndim == 3:
+            dO = dO[np.newaxis]
+
+        N, C, H, W_in = X.shape
+        F, _, KH, KW = W.shape
+        _, _, OH, OW = dO.shape
+
+        # im2col of input: (N, C*KH*KW, OH*OW)
+        X_col = Tensor.im2col_batch(X.astype(np.float32), KH, KW, stride, padding)
+
+        # dO reshaped: (N, F, OH*OW)
+        dO_col = dO.reshape(N, F, -1)
+
+        # ── dW: sum over batch ──
+        # dW = sum_n( dO_col[n] @ X_col[n].T )  → (F, C*KH*KW)
+        dW = np.einsum("nfp,ncp->fc", dO_col, X_col)
+        dW = dW.reshape(W.shape)
+
+        # ── dX: backprop through im2col ──
+        W_flat = W.reshape(F, -1)  # (F, C*KH*KW)
+        # dX_col = W_flat.T @ dO_col  → (N, C*KH*KW, OH*OW)
+        dX_col = np.einsum("fc,nfp->ncp", W_flat, dO_col)
+
+        dX = Tensor.col2im_batch(
+            dX_col.astype(np.float32), X.shape, KH, KW, stride, padding
+        )
+        return dX, dW
+
+    # ─── MaxPool backward (batched) ──────────────────────────
+    def maxpool2d_unpool(self, dout, mask, input_shape, kernelsize, stride=1, padding=0):
+        """Batched maxpool backward.
+        dout: (N, C, OH, OW)
+        mask: (N, C, OH, OW) — argmax indices within each pool window
+        input_shape: (N, C, H, W)
         """
-        C, H, W = X.shape
-        H_out = (H + 2 * pad - filter_height) // stride + 1
-        W_out = (W + 2 * pad - filter_width) // stride + 1
+        KH, KW = kernelsize
+        N, C, H, W = input_shape
+        _, _, OH, OW = dout.shape
 
-        # Manual padding (np.pad not supported in Numba)
-        X_padded = np.zeros((C, H + 2 * pad, W + 2 * pad), dtype=X.dtype)
-        X_padded[:, pad:pad + H, pad:pad + W] = X
+        num_patches = OH * OW
+        pool_size = KH * KW
 
-        # Output column buffer
-        cols = np.empty((C * filter_height * filter_width, H_out * W_out), dtype=X.dtype)
-        col_idx = 0
+        # Build col-format gradient: (N, C*KH*KW, OH*OW)
+        cols = np.zeros((N, C * pool_size, num_patches), dtype=np.float32)
+        dout_flat = dout.reshape(N, C, -1)   # (N, C, OH*OW)
+        mask_flat = mask.reshape(N, C, -1)   # (N, C, OH*OW)
 
-        for y in range(H_out):
-            for x in range(W_out):
-                patch = X_padded[:, y*stride : y*stride+filter_height,
-                                    x*stride : x*stride+filter_width]
-                cols[:, col_idx] = np.ascontiguousarray(patch).reshape(-1)
-                col_idx += 1
-
-        return cols
-    @staticmethod   
-    @njit
-    def col2im(cols, X_shape, KH, KW, stride=1, pad=0):
-        C, H, W = X_shape
-        H_out = (H + 2 * pad - KH) // stride + 1
-        W_out = (W + 2 * pad - KW) // stride + 1
-        cols = cols.astype(np.float32)
-        X_padded = np.zeros((C, H + 2 * pad, W + 2 * pad), dtype=np.float32)
-        col = 0
-        for y in range(H_out):
-            for x in range(W_out):
-                patch = np.ascontiguousarray(cols[:, col]).reshape(C, KH, KW)
-                X_padded[:, y*stride:y*stride+KH, x*stride:x*stride+KW] += patch
-                col += 1
-
-        if pad == 0:
-            return X_padded
-        return X_padded[:, pad:-pad, pad:-pad]
-
-    # @njit
-    def maxpool2d_unpool(self,dout, mask, input_shape, kernelsize, stride=1, padding=0):
-        """
-        dout: (C, out_h, out_w) - gradient from next layer
-        mask: (C, out_h, out_w) - indices of max values during forward
-        input_shape: (C, H, W) - original input shape before pooling
-        """
-        kernel_h, kernel_w=kernelsize[0],kernelsize[1]
-        
-        C, H, W = input_shape
-        out_h, out_w = dout.shape[1], dout.shape[2]
-
-        # Number of output patches
-        num_patches = out_h * out_w
-
-        # We will build (C * kernel_h * kernel_w, num_patches) like in im2col
-        cols = np.zeros((C * kernel_h * kernel_w, num_patches))#, dtype=np.float32
-
-        # Flatten for easier indexing
-        dout_flat = dout.reshape(C, -1)
-        mask_flat = mask.reshape(C, -1)
-
+        patch_idx = np.arange(num_patches)
         for c in range(C):
-            # Each column gets the dout at the position of max index
-            cols[c * kernel_h * kernel_w + mask_flat[c], np.arange(num_patches)] = dout_flat[c]
+            # cols[n, c * pool_size + mask[n,c,p], p] = dout[n, c, p]
+            # Vectorized over N and patches
+            row_indices = c * pool_size + mask_flat[:, c, :]  # (N, OH*OW)
+            for n in range(N):
+                cols[n, row_indices[n], patch_idx] = dout_flat[n, c]
 
-        # Use col2im to map back to original input shape
-        # print(cols)
-        dinput = self.col2im(cols.astype(np.float32), input_shape, kernel_h, kernel_w, stride, padding)
-
+        dinput = Tensor.col2im_batch(
+            cols, input_shape, KH, KW, stride, padding
+        )
         return dinput
 
-
-    # @njit
-    def conv_backward(self,dO, X, W, stride=1, padding=0):
-        """
-        dO: gradient of the output (out_channels, Ho, Wo)
-        X: input tensor (in_channels, Hi, Wi)
-        W: weight tensor (out_channels, in_channels, KH, KW)
-        stride: convolution stride
-        padding: padding size (assumes equal padding on all sides)
-        """
-        out_channels, in_channels, KH, KW = W.shape
-
-        if padding > 0:
-            X_padded = np.pad(X, ((0, 0), (padding, padding), (padding, padding)), 
-                            mode='constant')
-        else:
-            X_padded = X
-        # .astype(np.float32)
-        # Convert to column matrices with padded input
-        X_col = self.im2col(X_padded.astype(np.float32), KH, KW, stride)  # (in*KH*KW, Ho*Wo)
-        dO_col = dO.reshape(out_channels, -1)  # (out, Ho*Wo)
-        # print(X_col.shape)
-        # Filter gradients (single matrix multiply)
-        dW = dO_col @ X_col.T  # (out, in*KH*KW)
-        dW = dW.reshape(W.shape)
-        
-        # Input gradients
-        W_flat = W.reshape(out_channels, -1)  # (out, in*KH*KW)
-        dX_col = W_flat.T @ dO_col  # (in*KH*KW, Ho*Wo)
-        
-        # Convert back to input shape, handling padding in col2im
-        dX = self.col2im(dX_col.astype(np.float32), X.shape, KH, KW, stride, padding)
-        
-        return dX, dW
+    # ─── Upsample backward (batched) ─────────────────────────
     @staticmethod
-    @njit
     def upsample_backward(dout, input_shape, size):
+        """Backward for nearest-neighbor upsample.
+        dout: (N, C, H*sh, W*sw)   input_shape: (N, C, H, W)
         """
-        Backward pass for nearest neighbor upsampling.
+        sw, sh = size
+        if len(input_shape) == 3:
+            # Legacy 3D support
+            C, H, W = input_shape
+            dx = np.zeros((C, H, W), dtype=dout.dtype)
+            for i in range(H):
+                for j in range(W):
+                    dx[:, i, j] = dout[:, i*sh:(i+1)*sh, j*sw:(j+1)*sw].sum(axis=(1, 2))
+            return dx
 
-        Args:
-            dout (ndarray): Gradient of the loss with respect to the output of upsampling,
-                            of shape (batch_size, channels, height*size[1], width*size[0])
-            input_shape (tuple): Shape of the original input (batch_size, channels, height, width)
-            size (tuple): The upsampling factor as (scale_w, scale_h)
-
-        Returns:
-            dx (ndarray): Gradient with respect to the input, of shape (batch_size, channels, height, width)
-        """
-        scale_w, scale_h = size
-        channels, height, width = input_shape
-        dx = np.zeros(input_shape)
-
-        for i in range(height):
-            for j in range(width):
-                dx[ :, i, j] = np.sum(np.sum(dout[ :, i*scale_h:(i+1)*scale_h, j*scale_w:(j+1)*scale_w], axis=2), axis=1)
+        N, C, H, W = input_shape
+        # Reshape and sum over upsampled blocks
+        dx = dout.reshape(N, C, H, sh, W, sw).sum(axis=(3, 5))
         return dx
 
-
-
-
-
+    # ─── Main backward step ──────────────────────────────────
     def backward_step(self, nodeg):
+        # ── MaxPool backward ──
         if nodeg.mpctx[0]:
-            # print("hello")/
-            cp=nodeg.node.cp.astype(np.float32)
-            inp=nodeg.mpctx[1]#.astype(np.float32)
-            nodeg.node.child[0].node.cp+=self.maxpool2d_unpool(cp,inp,nodeg.mpctx[2],nodeg.mpctx[3],nodeg.mpctx[4],nodeg.mpctx[5])
-            # print(f"unpool parent {nodeg},child {nodeg.node.child[0]}")
+            cp = nodeg.node.cp.astype(np.float32)
+            mask = nodeg.mpctx[1]
+            input_shape = nodeg.mpctx[2]
+            kernelsize = nodeg.mpctx[3]
+            stride_val = nodeg.mpctx[4]
+            pad_val = nodeg.mpctx[5]
+            nodeg.node.child[0].node.cp += self.maxpool2d_unpool(
+                cp, mask, input_shape, kernelsize, stride_val, pad_val
+            )
+
+        # ── Upsample backward ──
         elif nodeg.upctx[0]:
-            cp=nodeg.node.cp.astype(np.float32)
-            nodeg.node.child[0].node.cp += self.upsample_backward(cp,nodeg.upctx[1],nodeg.upctx[2])
-            
-            
+            cp = nodeg.node.cp.astype(np.float32)
+            nodeg.node.child[0].node.cp += self.upsample_backward(
+                cp, nodeg.upctx[1], nodeg.upctx[2]
+            )
+
+        # ── Flatten backward ──
         elif nodeg.flctx:
-            nodeg.node.child[0].node.cp += (nodeg.node.cp.reshape(nodeg.flctx))
-            # print(f"flatten parent {nodeg},child {nodeg.node.child}")
-            
-            # print(nodeg.node.child[0].node.cp)
-            
+            nodeg.node.child[0].node.cp += nodeg.node.cp.reshape(nodeg.flctx)
+
+        # ── Conv2D backward ──
         elif nodeg.iconv2d[0]:
-            X = nodeg.node.child[0].value  # (C, H, W)
+            X = nodeg.node.child[0].value  # (N, C, H, W)
             W = nodeg.node.child[1].value  # (F, C, KH, KW)
-            cp = nodeg.node.cp.astype(np.float32)             # (F, out_H, out_W)
-           
-            nodeg.node.child[0].node.cp,nodeg.node.child[1].node.cp=self.conv_backward(cp,X.astype(np.float32),W.astype(np.float32),stride=nodeg.iconv2d[1],padding=nodeg.iconv2d[2])
+            cp = nodeg.node.cp.astype(np.float32)  # (N, F, OH, OW)
 
+            dX, dW = self.conv_backward(
+                cp, X.astype(np.float32), W.astype(np.float32),
+                stride=nodeg.iconv2d[1], padding=nodeg.iconv2d[2],
+            )
+            nodeg.node.child[0].node.cp += dX
+            nodeg.node.child[1].node.cp += dW
+
+        # ── Softmax backward (VJP) ──
         elif nodeg.isoftmax:
-            jacobian = nodeg.node.child_grad[0, 1]
-            nodeg.node.child[0].node.cp += jacobian @ nodeg.node.cp
-            
-        elif nodeg.iconcatenete:
-            nodeg.node.child[0].node.cp +=nodeg.node.cp[:nodeg.iconcatenete]
-            nodeg.node.child[1].node.cp +=nodeg.node.cp[nodeg.iconcatenete:]
-            
-        elif not nodeg.matm:
-            for child_idx, child in enumerate(nodeg.node.child):
-                if child_idx == 0:  # First child
-                    # nodeg.node.child_grad[0,1] *= nodeg.node.cp
-                    child.node.cp += (nodeg.node.child_grad[0,1]*nodeg.node.cp)
-                elif child_idx == 1:  
-                    # nodeg.node.child_grad[1,1] *= nodeg.node.cp
-                    child.node.cp += (nodeg.node.child_grad[1,1]*nodeg.node.cp)
-        
-        else:
-            A = nodeg.node.child[0]  
-            B = nodeg.node.child[1]  
-            A.node.cp += nodeg.node.cp @ B.value.T
-            B.node.cp += A.value.T @ nodeg.node.cp
-            
-            
+            s = nodeg.node.child_grad[0, 1]  # softmax output
+            dout = nodeg.node.cp              # upstream gradient
+            # VJP: dx = s * (dout - sum(dout * s, axis=-1, keepdims=True))
+            dot = np.sum(dout * s, axis=-1, keepdims=True)
+            dx = s * (dout - dot)
+            nodeg.node.child[0].node.cp += dx
 
+        # ── BatchNorm backward ──
+        elif nodeg.ibatchnorm is not None:
+            ctx = nodeg.ibatchnorm
+            dout = nodeg.node.cp
+            x_hat = ctx["x_hat"]
+            std_inv = ctx["std_inv"]
+            gamma = ctx["gamma"]
+            reduce_axes = ctx["reduce_axes"]
+            bshape = ctx["broadcast_shape"]
+            M = ctx["N_elements"]  # number of elements per feature being averaged
+
+            gamma_b = gamma.reshape(bshape)
+
+            # dgamma, dbeta
+            dgamma = np.sum(dout * x_hat, axis=reduce_axes)
+            dbeta = np.sum(dout, axis=reduce_axes)
+
+            # dx  (efficient fused formula)
+            dx_hat = dout * gamma_b
+            dx = (1.0 / M) * std_inv * (
+                M * dx_hat
+                - np.sum(dx_hat, axis=reduce_axes).reshape(bshape)
+                - x_hat * np.sum(dx_hat * x_hat, axis=reduce_axes).reshape(bshape)
+            )
+
+            # Accumulate gradients
+            nodeg.node.child[0].node.cp += dx              # input grad
+            nodeg.node.child[1].node.cp += dgamma          # gamma grad
+            nodeg.node.child[2].node.cp += dbeta            # beta grad
+
+        # ── Concatenate backward ──
+        elif nodeg.iconcatenete:
+            split = nodeg.iconcatenete
+            cp = nodeg.node.cp
+            if cp.ndim >= 4:
+                # Batched: split along axis 1 (channels)
+                nodeg.node.child[0].node.cp += cp[:, :split]
+                nodeg.node.child[1].node.cp += cp[:, split:]
+            else:
+                nodeg.node.child[0].node.cp += cp[:split]
+                nodeg.node.child[1].node.cp += cp[split:]
+
+        # ── Reduction (sum/mean) backward ──
+        elif nodeg.ireduction is not None:
+            ctx = nodeg.ireduction
+            cp = nodeg.node.cp  # upstream gradient (reduced shape)
+            input_shape = ctx["input_shape"]
+            axis = ctx["axis"]
+            keepdims = ctx["keepdims"]
+            scale = ctx["scale"]
+
+            # Expand cp back to input shape
+            if axis is not None and not keepdims:
+                # Re-insert the reduced dimension(s)
+                if isinstance(axis, int):
+                    cp = np.expand_dims(cp, axis=axis)
+                else:
+                    for ax in sorted(axis):
+                        cp = np.expand_dims(cp, axis=ax)
+            # Broadcast to input shape
+            grad = np.broadcast_to(cp, input_shape) * scale
+            nodeg.node.child[0].node.cp += grad.astype(np.float32)
+
+        # ── Matmul backward (batched) ──
+        elif nodeg.matm:
+            A = nodeg.node.child[0]  # (N, in)
+            B = nodeg.node.child[1]  # (in, out)
+            dout = nodeg.node.cp     # (N, out)
+
+            # dA = dout @ B.T  →  (N, in)
+            A.node.cp += dout @ B.value.T
+
+            # dB = A.T @ dout  → (in, out)  — sums over batch via matmul
+            dB = A.value.T @ dout  # (in, N) @ (N, out) = (in, out)
+            # Reduce to B's shape if needed (handles broadcasting)
+            B.node.cp += self._reduce_grad(dB, B.value.shape)
+
+        # ── Element-wise ops backward (with broadcast reduction) ──
+        else:
+            for child_idx, child in enumerate(nodeg.node.child):
+                if child_idx < 2:
+                    local_grad = nodeg.node.child_grad[child_idx, 1]
+                    # child_grad stores object arrays — ensure float
+                    if isinstance(local_grad, np.ndarray):
+                        local_grad = np.asarray(local_grad, dtype=np.float32)
+                    cp = nodeg.node.cp
+                    if isinstance(cp, np.ndarray):
+                        cp = np.asarray(cp, dtype=np.float32)
+                    raw_grad = local_grad * cp
+                    # Reduce broadcast dimensions so grad matches child shape
+                    reduced = self._reduce_grad(raw_grad, child.value.shape)
+                    if isinstance(child.node.cp, (int, float)):
+                        child.node.cp = np.zeros_like(child.value, dtype=np.float32)
+                    child.node.cp += reduced.astype(np.float32)
+
+    # ─── Backward pass ───────────────────────────────────────
     def backward(self):
-        self.hook.node.cp = np.ones_like(self.hook.value)
-        graph = self.buildgraph()
+        self.hook.node.cp = np.ones_like(self.hook.value, dtype=np.float32)
+        graph = list(self.buildgraph())
+        # Initialize all gradient accumulators to proper-shaped zero arrays
+        for nodeg in graph:
+            for child in nodeg.node.child:
+                if not isinstance(child.node.cp, np.ndarray) or child.node.cp.shape != child.value.shape:
+                    child.node.cp = np.zeros_like(child.value, dtype=np.float32)
         for nodeg in graph:
             self.backward_step(nodeg)
-            
+
+    # ─── Topological sort (DFS) ──────────────────────────────
     def buildgraph(self):
         visited = set()
         topo_order = []
+
         def connect(nodeg):
             if nodeg in visited:
                 return
@@ -215,36 +283,38 @@ class autograd4nn:
             for child in nodeg.node.child:
                 connect(child)
             topo_order.append(nodeg)
+
         connect(self.hook)
         return reversed(topo_order)
-#########################################################################################
-#######NORMAL AUTOGRAD########
+
+
+# ─────────────────────────────────────────────────────────────
+# Basic autograd (non-NN, kept for compatibility)
+# ─────────────────────────────────────────────────────────────
 class autograd:
-    def __init__(self,hook):
-        self.hook=hook
+    def __init__(self, hook):
+        self.hook = hook
         self.backward()
-        
-        
+
     def backward_step(self, nodeg):
         for a in nodeg.node.child:
-            
-            if np.allclose(nodeg.node.child_grad[0,0], a.node.out) :
-                nodeg.node.child_grad[0,1] *= nodeg.node.cp
-                a.node.cp += nodeg.node.child_grad[0,1]
-            elif np.allclose(nodeg.node.child_grad[1,0], a.node.out) :
-                nodeg.node.child_grad[1,1] *= nodeg.node.cp
-                a.node.cp += nodeg.node.child_grad[1,1]
-                
+            if np.allclose(nodeg.node.child_grad[0, 0], a.node.out):
+                nodeg.node.child_grad[0, 1] *= nodeg.node.cp
+                a.node.cp += nodeg.node.child_grad[0, 1]
+            elif np.allclose(nodeg.node.child_grad[1, 0], a.node.out):
+                nodeg.node.child_grad[1, 1] *= nodeg.node.cp
+                a.node.cp += nodeg.node.child_grad[1, 1]
+
     def backward(self):
         self.hook.node.cp = np.ones(self.hook.value.shape)
         graph = self.buildgraph()
-        for nodeg in (graph):
+        for nodeg in graph:
             self.backward_step(nodeg)
-            
-    # Depth first search
+
     def buildgraph(self):
         visited = set()
         topo_order = []
+
         def connect(nodeg):
             if nodeg in visited:
                 return
@@ -252,5 +322,6 @@ class autograd:
             for child in nodeg.node.child:
                 connect(child)
             topo_order.append(nodeg)
+
         connect(self.hook)
         return reversed(topo_order)
