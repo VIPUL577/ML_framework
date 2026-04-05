@@ -148,15 +148,19 @@ class Conv2D(Layer):
             raise ValueError('Activation must be "relu", "sigmoid", "softmax", or "tanh"')
         if kernel_initializer not in initializers:
             raise ValueError(f"Initializer must be one of {list(initializers.keys())}")
-        if not isinstance(stride, int) or not isinstance(zero_padding, int):
-            raise ValueError("stride and zero_padding should be integers")
+
+        # Normalize stride/padding to (h, w) tuples
+        if isinstance(stride, int):
+            stride = (stride, stride)
+        if isinstance(zero_padding, int):
+            zero_padding = (zero_padding, zero_padding)
 
         self.layeract = activation
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
-        self.stride = stride
-        self.zero_padding = zero_padding
+        self.stride = stride          # (strideh, stridew)
+        self.zero_padding = zero_padding  # (padh, padw)
         # Bias: (1, F, 1, 1) broadcasts over (N, F, OH, OW)
         self.bais = 0
         self.weights = Tensor(
@@ -180,8 +184,10 @@ class Conv2D(Layer):
             inp = inp[np.newaxis]
 
         N, C, H, W_in = inp.shape
-        OH = (H - self.kernel_size[0] + 2 * self.zero_padding) // self.stride + 1
-        OW = (W_in - self.kernel_size[1] + 2 * self.zero_padding) // self.stride + 1
+        strideh, stridew = self.stride
+        padh, padw = self.zero_padding
+        OH = (H - self.kernel_size[0] + 2 * padh) // strideh + 1
+        OW = (W_in - self.kernel_size[1] + 2 * padw) // stridew + 1
 
         # Lazy-init bias with correct spatial dims
         if isinstance(self.bais, int) or self.bais.shape != (1, self.out_channels, 1, 1):
@@ -291,12 +297,18 @@ class ConvTranspose2D(Layer):
         if kernel_initializer not in initializers:
             raise ValueError(f"Initializer must be one of {list(initializers.keys())}")
 
+        # Normalize stride/padding to (h, w) tuples
+        if isinstance(stride, int):
+            stride = (stride, stride)
+        if isinstance(zero_padding, int):
+            zero_padding = (zero_padding, zero_padding)
+
         self.layeract = activation
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
-        self.stride = stride
-        self.zero_padding = zero_padding
+        self.stride = stride          # (strideh, stridew)
+        self.zero_padding = zero_padding  # (padh, padw)
         # Weight: (Cin, Cout, KH, KW)
         self.weights = Tensor(
             np.random.normal(
@@ -321,8 +333,10 @@ class ConvTranspose2D(Layer):
             inp = inp[np.newaxis]
 
         N, Cin, H, W_in = inp.shape
-        Hout = (H - 1) * self.stride - 2 * self.zero_padding + self.kernel_size[0]
-        Wout = (W_in - 1) * self.stride - 2 * self.zero_padding + self.kernel_size[1]
+        strideh, stridew = self.stride
+        padh, padw = self.zero_padding
+        Hout = (H - 1) * strideh - 2 * padh + self.kernel_size[0]
+        Wout = (W_in - 1) * stridew - 2 * padw + self.kernel_size[1]
 
         # Lazy-init bias
         if isinstance(self.bais, int) or self.bais.shape != (1, self.out_channels, 1, 1):
@@ -364,8 +378,13 @@ class MaxPool2D(Layer):
     def __init__(self, pool_size=(2, 2), stride=1, padding=0):
         super().__init__()
         self.pool_size = pool_size
-        self.stride = stride
-        self.padding = padding
+        # Normalize stride/padding to (h, w) tuples
+        if isinstance(stride, int):
+            stride = (stride, stride)
+        if isinstance(padding, int):
+            padding = (padding, padding)
+        self.stride = stride      # (strideh, stridew)
+        self.padding = padding    # (padh, padw)
 
     def __call__(self, input_layer):
         if not isinstance(input_layer, Layer):

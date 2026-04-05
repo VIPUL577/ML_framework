@@ -45,14 +45,14 @@ class tensor(node):
         # ── special backward context flags ──
         self.matm = False
         self.isoftmax = False
-        self.iconv2d = (False, 1, 0)
+        self.iconv2d = (False, 1, 1, 0, 0)
         self.unpoolctx = (False, 0, 0)
         self.flctx = 0
-        self.mpctx = (False, 0, 0, 0, 1, 0)
+        self.mpctx = (False, 0, 0, 0, 1, 1, 0, 0)
         self.iconcatenete = 0
         self.ibatchnorm = None
         self.ireduction = None
-        self.convTrans = (False, 1, 0)
+        self.convTrans = (False, 1, 1, 0, 0)
 
         if is_leaf:
             self.node.out = self.value
@@ -367,19 +367,29 @@ class tensor(node):
         if x.ndim == 3:
             x = x[np.newaxis]
 
+        # Normalize stride/padding to (h, w) tuples
+        if isinstance(stride, int):
+            strideh, stridew = stride, stride
+        else:
+            strideh, stridew = stride
+        if isinstance(padding, int):
+            padh, padw = padding, padding
+        else:
+            padh, padw = padding
+
         if _USE_CPP:
-            out_val = seera_cpp.conv2d_forward(x, w, stride, padding)
+            out_val = seera_cpp.conv2d_forward(x, w, strideh, stridew, padh, padw)
         else:
             N, C, H, W_in = x.shape
             F, _, KH, KW = w.shape
-            OH = (H + 2 * padding - KH) // stride + 1
-            OW = (W_in + 2 * padding - KW) // stride + 1
-            col = tensor.im2col_batch(x, KH, KW, stride, padding)
+            OH = (H + 2 * padh - KH) // strideh + 1
+            OW = (W_in + 2 * padw - KW) // stridew + 1
+            col = tensor.im2col_batch(x, KH, KW, strideh, stridew, padh, padw)
             W_col = w.reshape(F, -1)
             out_val = np.einsum("fc,ncp->nfp", W_col, col).reshape(N, F, OH, OW)
 
         out = tensor(out_val)
-        out.iconv2d = (True, stride, padding)
+        out.iconv2d = (True, strideh, stridew, padh, padw)
         out.node.out = out.value
         out.node.child = [self, W]
         return out
@@ -393,20 +403,30 @@ class tensor(node):
         if img.ndim == 3:
             img = img[np.newaxis]
 
+        # Normalize stride/padding to (h, w) tuples
+        if isinstance(stride, int):
+            strideh, stridew = stride, stride
+        else:
+            strideh, stridew = stride
+        if isinstance(padding, int):
+            padh, padw = padding, padding
+        else:
+            padh, padw = padding
+
         if _USE_CPP:
-            out_val, mask = seera_cpp.maxpool2d_forward(img, KH, KW, stride, padding)
+            out_val, mask = seera_cpp.maxpool2d_forward(img, KH, KW, strideh, stridew, padh, padw)
             mask = np.array(mask, dtype=np.int32)
         else:
             N, C, H, W = img.shape
-            OH = (H + 2 * padding - KH) // stride + 1
-            OW = (W + 2 * padding - KW) // stride + 1
-            col = tensor.im2col_batch(img, KH, KW, stride, padding)
+            OH = (H + 2 * padh - KH) // strideh + 1
+            OW = (W + 2 * padw - KW) // stridew + 1
+            col = tensor.im2col_batch(img, KH, KW, strideh, stridew, padh, padw)
             col = col.reshape(N, C, KH * KW, OH * OW)
             mask = np.argmax(col, axis=2).reshape(N, C, OH, OW)
             out_val = np.max(col, axis=2).reshape(N, C, OH, OW)
 
         out = tensor(out_val)
-        out.mpctx = (True, mask, self.value.shape, kernelsize, stride, padding)
+        out.mpctx = (True, mask, self.value.shape, kernelsize, strideh, stridew, padh, padw)
         out.node.out = out.value
         out.node.child = [self]
         return out
@@ -448,29 +468,36 @@ class tensor(node):
         if x.ndim == 3:
             x = x[np.newaxis]
 
+        # Normalize stride/padding to (h, w) tuples
+        if isinstance(stride, int):
+            strideh, stridew = stride, stride
+        else:
+            strideh, stridew = stride
+        if isinstance(padding, int):
+            padh, padw = padding, padding
+        else:
+            padh, padw = padding
+
         if _USE_CPP:
-            out_val = seera_cpp.conv_transpose2d_forward(x, w, stride, padding)
+            out_val = seera_cpp.conv_transpose2d_forward(x, w, strideh, stridew, padh, padw)
         else:
             # NumPy fallback
             N, Cin, H, Win = x.shape
             _, Cout, KH, KW = w.shape
-            Hout = (H - 1) * stride - 2 * padding + KH
-            Wout = (Win - 1) * stride - 2 * padding + KW
+            Hout = (H - 1) * strideh - 2 * padh + KH
+            Wout = (Win - 1) * stridew - 2 * padw + KW
             col_row = Cout * KH * KW
             spatial_in = H * Win
-            # W_flat: (Cin, Cout*KH*KW), X_flat: (N, Cin, H*Win)
             W_flat = w.reshape(Cin, col_row)
             X_flat = x.reshape(N, Cin, spatial_in)
-            # col = W_flat.T @ X_flat  per sample → (N, col_row, spatial_in)
             col = np.einsum('cr,ncs->nrs', W_flat, X_flat)
-            # col2im to scatter into output
             out_val = tensor.col2im_batch(
                 col.reshape(N, col_row, spatial_in),
-                (N, Cout, Hout, Wout), KH, KW, stride, padding,
+                (N, Cout, Hout, Wout), KH, KW, strideh, stridew, padh, padw,
             )
 
         out = tensor(out_val)
-        out.convTrans = (True, stride, padding)
+        out.convTrans = (True, strideh, stridew, padh, padw)
         out.node.out = out.value
         out.node.child = [self, W]
         return out
@@ -529,34 +556,34 @@ class tensor(node):
 
     # ─── NumPy fallback im2col/col2im (used when C++ unavailable) ──
     @staticmethod
-    def im2col_batch(X, KH, KW, stride=1, pad=0):
+    def im2col_batch(X, KH, KW, strideh=1, stridew=1, padh=0, padw=0):
         N, C, H, W = X.shape
-        OH = (H + 2 * pad - KH) // stride + 1
-        OW = (W + 2 * pad - KW) // stride + 1
-        if pad > 0:
-            X = np.pad(X, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode="constant")
+        OH = (H + 2 * padh - KH) // strideh + 1
+        OW = (W + 2 * padw - KW) // stridew + 1
+        if padh > 0 or padw > 0:
+            X = np.pad(X, ((0, 0), (0, 0), (padh, padh), (padw, padw)), mode="constant")
         _, _, Hp, Wp = X.shape
         s_n, s_c, s_h, s_w = X.strides
         shape = (N, C, OH, OW, KH, KW)
-        strides = (s_n, s_c, s_h * stride, s_w * stride, s_h, s_w)
+        strides = (s_n, s_c, s_h * strideh, s_w * stridew, s_h, s_w)
         col = np.lib.stride_tricks.as_strided(X, shape=shape, strides=strides)
         return np.ascontiguousarray(col.reshape(N, C * KH * KW, OH * OW))
 
     @staticmethod
-    def col2im_batch(cols, X_shape, KH, KW, stride=1, pad=0):
+    def col2im_batch(cols, X_shape, KH, KW, strideh=1, stridew=1, padh=0, padw=0):
         N, C, H, W = X_shape
-        OH = (H + 2 * pad - KH) // stride + 1
-        OW = (W + 2 * pad - KW) // stride + 1
-        Hp, Wp = H + 2 * pad, W + 2 * pad
+        OH = (H + 2 * padh - KH) // strideh + 1
+        OW = (W + 2 * padw - KW) // stridew + 1
+        Hp, Wp = H + 2 * padh, W + 2 * padw
         X_padded = np.zeros((N, C, Hp, Wp), dtype=cols.dtype)
         cols_reshaped = cols.reshape(N, C, KH, KW, OH, OW)
         for i in range(KH):
-            i_end = i + stride * OH
+            i_end = i + strideh * OH
             for j in range(KW):
-                j_end = j + stride * OW
-                X_padded[:, :, i:i_end:stride, j:j_end:stride] += cols_reshaped[:, :, i, j, :, :]
-        if pad > 0:
-            return X_padded[:, :, pad:-pad, pad:-pad]
+                j_end = j + stridew * OW
+                X_padded[:, :, i:i_end:strideh, j:j_end:stridew] += cols_reshaped[:, :, i, j, :, :]
+        if padh > 0 or padw > 0:
+            return X_padded[:, :, padh:Hp-padh if padh else Hp, padw:Wp-padw if padw else Wp]
         return X_padded
 
     # ─── Factory methods ─────────────────────────────────────

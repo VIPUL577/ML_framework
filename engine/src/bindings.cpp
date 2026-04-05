@@ -99,22 +99,22 @@ PYBIND11_MODULE(seera_cpp, m) {
     });
 
     // ── Conv2D Forward ──────────────────────────────────────
-    m.def("conv2d_forward", [](arr_f X, arr_f W, int stride, int pad) -> arr_f {
+    m.def("conv2d_forward", [](arr_f X, arr_f W, int strideh, int stridew, int padh, int padw) -> arr_f {
         auto xb = X.request();
         auto wb = W.request();
         int N = xb.shape[0], C = xb.shape[1], H = xb.shape[2], Wi = xb.shape[3];
         int F = wb.shape[0], KH = wb.shape[2], KW = wb.shape[3];
-        int OH = (H + 2*pad - KH) / stride + 1;
-        int OW = (Wi + 2*pad - KW) / stride + 1;
+        int OH = (H + 2*padh - KH) / strideh + 1;
+        int OW = (Wi + 2*padw - KW) / stridew + 1;
         arr_f out({(ssize_t)N, (ssize_t)F, (ssize_t)OH, (ssize_t)OW});
         seera::conv2d_forward(X.data(), W.data(), out.mutable_data(),
-                              N, C, H, Wi, F, KH, KW, stride, pad);
+                              N, C, H, Wi, F, KH, KW, strideh, stridew, padh, padw);
         return out;
     });
 
     // ── Conv2D Backward ─────────────────────────────────────
     m.def("conv2d_backward", [](arr_f dout, arr_f X, arr_f W,
-                                int stride, int pad) -> py::tuple {
+                                int strideh, int stridew, int padh, int padw) -> py::tuple {
         auto xb = X.request();
         auto wb = W.request();
         int N = xb.shape[0], C = xb.shape[1], H = xb.shape[2], Wi = xb.shape[3];
@@ -123,33 +123,33 @@ PYBIND11_MODULE(seera_cpp, m) {
         arr_f dW(wb.shape);
         seera::conv2d_backward(dout.data(), X.data(), W.data(),
                                dX.mutable_data(), dW.mutable_data(),
-                               N, C, H, Wi, F, KH, KW, stride, pad);
+                               N, C, H, Wi, F, KH, KW, strideh, stridew, padh, padw);
         return py::make_tuple(dX, dW);
     });
 
     // ── MaxPool2D Forward ───────────────────────────────────
     m.def("maxpool2d_forward", [](arr_f X, int KH, int KW,
-                                  int stride, int pad) -> py::tuple {
+                                  int strideh, int stridew, int padh, int padw) -> py::tuple {
         auto xb = X.request();
         int N = xb.shape[0], C = xb.shape[1], H = xb.shape[2], W = xb.shape[3];
-        int OH = (H + 2*pad - KH) / stride + 1;
-        int OW = (W + 2*pad - KW) / stride + 1;
+        int OH = (H + 2*padh - KH) / strideh + 1;
+        int OW = (W + 2*padw - KW) / stridew + 1;
         arr_f out({(ssize_t)N, (ssize_t)C, (ssize_t)OH, (ssize_t)OW});
         arr_i mask({(ssize_t)N, (ssize_t)C, (ssize_t)OH, (ssize_t)OW});
         seera::maxpool2d_forward(X.data(), out.mutable_data(), mask.mutable_data(),
-                                 N, C, H, W, KH, KW, stride, pad);
+                                 N, C, H, W, KH, KW, strideh, stridew, padh, padw);
         return py::make_tuple(out, mask);
     });
 
     // ── MaxPool2D Backward ──────────────────────────────────
     m.def("maxpool2d_backward", [](arr_f dout, arr_i mask,
                                    int N, int C, int H, int W,
-                                   int KH, int KW, int stride, int pad) -> arr_f {
+                                   int KH, int KW, int strideh, int stridew, int padh, int padw) -> arr_f {
         auto db = dout.request();
         int OH = db.shape[2], OW = db.shape[3];
         arr_f dX({(ssize_t)N, (ssize_t)C, (ssize_t)H, (ssize_t)W});
         seera::maxpool2d_backward(dout.data(), mask.data(), dX.mutable_data(),
-                                  N, C, H, W, OH, OW, KH, KW, stride, pad);
+                                  N, C, H, W, OH, OW, KH, KW, strideh, stridew, padh, padw);
         return dX;
     });
 
@@ -172,22 +172,22 @@ PYBIND11_MODULE(seera_cpp, m) {
 
     // ── ConvTranspose2D Forward ─────────────────────────────
     m.def("conv_transpose2d_forward", [](arr_f X, arr_f W,
-                                        int stride, int pad) -> arr_f {
+                                        int strideh, int stridew, int padh, int padw) -> arr_f {
         auto xb = X.request();
         auto wb = W.request();
         int N = xb.shape[0], Cin = xb.shape[1], H = xb.shape[2], Wi = xb.shape[3];
         int Cout = wb.shape[1], KH = wb.shape[2], KW = wb.shape[3];
-        int Hout = (H - 1) * stride - 2 * pad + KH;
-        int Wout = (Wi - 1) * stride - 2 * pad + KW;
+        int Hout = (H - 1) * strideh - 2 * padh + KH;
+        int Wout = (Wi - 1) * stridew - 2 * padw + KW;
         arr_f out({(ssize_t)N, (ssize_t)Cout, (ssize_t)Hout, (ssize_t)Wout});
         seera::conv_transpose2d_forward(X.data(), W.data(), out.mutable_data(),
-                                        N, Cin, H, Wi, Cout, KH, KW, stride, pad);
+                                        N, Cin, H, Wi, Cout, KH, KW, strideh, stridew, padh, padw);
         return out;
     });
 
     // ── ConvTranspose2D Backward ────────────────────────────
     m.def("conv_transpose2d_backward", [](arr_f dout, arr_f X, arr_f W,
-                                         int stride, int pad) -> py::tuple {
+                                         int strideh, int stridew, int padh, int padw) -> py::tuple {
         auto xb = X.request();
         auto wb = W.request();
         int N = xb.shape[0], Cin = xb.shape[1], H = xb.shape[2], Wi = xb.shape[3];
@@ -196,7 +196,7 @@ PYBIND11_MODULE(seera_cpp, m) {
         arr_f dW(wb.shape);
         seera::conv_transpose2d_backward(dout.data(), X.data(), W.data(),
                                          dX.mutable_data(), dW.mutable_data(),
-                                         N, Cin, H, Wi, Cout, KH, KW, stride, pad);
+                                         N, Cin, H, Wi, Cout, KH, KW, strideh, stridew, padh, padw);
         return py::make_tuple(dX, dW);
     });
 

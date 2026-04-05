@@ -9,9 +9,9 @@ namespace seera {
 // X(N,C,H,W) → out(N,C,OH,OW), mask(N,C,OH,OW) [argmax indices]
 void maxpool2d_forward(const float* X, float* out, int32_t* mask,
                        int N, int C, int H, int W,
-                       int KH, int KW, int stride, int pad) {
-    int OH = (H + 2 * pad - KH) / stride + 1;
-    int OW = (W + 2 * pad - KW) / stride + 1;
+                       int KH, int KW, int strideh, int stridew, int padh, int padw) {
+    int OH = (H + 2 * padh - KH) / strideh + 1;
+    int OW = (W + 2 * padw - KW) / stridew + 1;
 
     #pragma omp parallel for collapse(2) schedule(static)
     for (int n = 0; n < N; n++) {
@@ -22,8 +22,8 @@ void maxpool2d_forward(const float* X, float* out, int32_t* mask,
                     int mx_idx = 0;
                     for (int kh = 0; kh < KH; kh++) {
                         for (int kw = 0; kw < KW; kw++) {
-                            int h_idx = oh * stride + kh - pad;
-                            int w_idx = ow * stride + kw - pad;
+                            int h_idx = oh * strideh + kh - padh;
+                            int w_idx = ow * stridew + kw - padw;
                             float val = 0.0f;
                             if (h_idx >= 0 && h_idx < H && w_idx >= 0 && w_idx < W)
                                 val = X[n*C*H*W + c*H*W + h_idx*W + w_idx];
@@ -42,11 +42,10 @@ void maxpool2d_forward(const float* X, float* out, int32_t* mask,
     }
 }
 
-// ── MaxPool2D Backward ──────────────────────────────────────
 void maxpool2d_backward(const float* dout, const int32_t* mask, float* dX,
                         int N, int C, int H, int W,
                         int OH, int OW, int KH, int KW,
-                        int stride, int pad) {
+                        int strideh, int stridew, int padh, int padw) {
     std::memset(dX, 0, N * C * H * W * sizeof(float));
 
     // Cannot parallelize with collapse since multiple windows may write to same dX location
@@ -59,8 +58,8 @@ void maxpool2d_backward(const float* dout, const int32_t* mask, float* dX,
                     int mx_idx = mask[out_idx];
                     int kh = mx_idx / KW;
                     int kw = mx_idx % KW;
-                    int h_idx = oh * stride + kh - pad;
-                    int w_idx = ow * stride + kw - pad;
+                    int h_idx = oh * strideh + kh - padh;
+                    int w_idx = ow * stridew + kw - padw;
                     if (h_idx >= 0 && h_idx < H && w_idx >= 0 && w_idx < W) {
                         // Atomic add for thread safety
                         #pragma omp atomic
@@ -72,7 +71,6 @@ void maxpool2d_backward(const float* dout, const int32_t* mask, float* dX,
     }
 }
 
-// ── Unpooling Nearest Forward ───────────────────────────────
 void unpooling_fwd(const float* x, float* out,
                   int N, int C, int H, int W, int sh, int sw) {
     int Ho = H * sh, Wo = W * sw;
@@ -89,7 +87,6 @@ void unpooling_fwd(const float* x, float* out,
     }
 }
 
-// ── Unpooling Nearest Backward ──────────────────────────────
 void unpooling_bwd(const float* dout, float* dx,
                   int N, int C, int H, int W, int sh, int sw) {
     int Ho = H * sh, Wo = W * sw;

@@ -31,7 +31,7 @@ class autograd4nn:
         return out
 
     # ─── Conv backward (C++ or NumPy) ────────────────────────
-    def conv_backward(self, dO, X, W, stride=1, padding=0):
+    def conv_backward(self, dO, X, W, strideh=1, stridew=1, paddingh=0, paddingw=0):
         if X.ndim == 3: X = X[np.newaxis]
         if dO.ndim == 3: dO = dO[np.newaxis]
 
@@ -40,23 +40,23 @@ class autograd4nn:
                 np.ascontiguousarray(dO, dtype=np.float32),
                 np.ascontiguousarray(X, dtype=np.float32),
                 np.ascontiguousarray(W, dtype=np.float32),
-                stride, padding,
+                strideh, stridew, paddingh, paddingw,
             )
             return dX, dW
 
         # NumPy fallback
         N, C, H, W_in = X.shape
         F, _, KH, KW = W.shape
-        X_col = Tensor.im2col_batch(X.astype(np.float32), KH, KW, stride, padding)
+        X_col = Tensor.im2col_batch(X.astype(np.float32), KH, KW, strideh, stridew, paddingh, paddingw)
         dO_col = dO.reshape(N, F, -1)
         dW = np.einsum("nfp,ncp->fc", dO_col, X_col).reshape(W.shape)
         W_flat = W.reshape(F, -1)
         dX_col = np.einsum("fc,nfp->ncp", W_flat, dO_col)
-        dX = Tensor.col2im_batch(dX_col.astype(np.float32), X.shape, KH, KW, stride, padding)
+        dX = Tensor.col2im_batch(dX_col.astype(np.float32), X.shape, KH, KW, strideh, stridew, paddingh, paddingw)
         return dX, dW
 
     # ─── MaxPool backward (C++ or NumPy) ─────────────────────
-    def maxpool2d_unpool(self, dout, mask, input_shape, kernelsize, stride=1, padding=0):
+    def maxpool2d_unpool(self, dout, mask, input_shape, kernelsize, strideh=1, stridew=1, paddingh=0, paddingw=0):
         KH, KW = kernelsize
         if len(input_shape) == 3:
             input_shape = (1,) + input_shape
@@ -66,7 +66,7 @@ class autograd4nn:
             return seera_cpp.maxpool2d_backward(
                 np.ascontiguousarray(dout, dtype=np.float32),
                 np.ascontiguousarray(mask, dtype=np.int32),
-                N, C, H, W, KH, KW, stride, padding,
+                N, C, H, W, KH, KW, strideh, stridew, paddingh, paddingw,
             )
 
         # NumPy fallback
@@ -81,7 +81,7 @@ class autograd4nn:
             row_indices = c * pool_size + mask_flat[:, c, :]
             for n in range(N):
                 cols[n, row_indices[n], patch_idx] = dout_flat[n, c]
-        return Tensor.col2im_batch(cols, input_shape, KH, KW, stride, padding)
+        return Tensor.col2im_batch(cols, input_shape, KH, KW, strideh, stridew, paddingh, paddingw)
 
     # ─── Unpooling backward (C++ or NumPy) ──────────────────
     @staticmethod
@@ -100,7 +100,7 @@ class autograd4nn:
         return dout.reshape(N, C, H, sh, W, sw).sum(axis=(3, 5))
 
     # ─── ConvTranspose2D backward (C++ or NumPy) ───────────
-    def conv_transpose2d_backward(self, dO, X, W, stride=1, padding=0):
+    def conv_transpose2d_backward(self, dO, X, W, strideh=1, stridew=1, paddingh=0, paddingw=0):
         if X.ndim == 3: X = X[np.newaxis]
         if dO.ndim == 3: dO = dO[np.newaxis]
 
@@ -109,21 +109,21 @@ class autograd4nn:
                 np.ascontiguousarray(dO, dtype=np.float32),
                 np.ascontiguousarray(X, dtype=np.float32),
                 np.ascontiguousarray(W, dtype=np.float32),
-                stride, padding,
+                strideh, stridew, paddingh, paddingw,
             )
             return dX, dW
 
         # NumPy fallback
         N, Cin, H, Win = X.shape
         _, Cout, KH, KW = W.shape
-        Hout = (H - 1) * stride - 2 * padding + KH
-        Wout = (Win - 1) * stride - 2 * padding + KW
+        Hout = (H - 1) * strideh - 2 * paddingh + KH
+        Wout = (Win - 1) * stridew - 2 * paddingw + KW
         col_row = Cout * KH * KW
         spatial_in = H * Win
 
         # im2col on dout
         col_dout = Tensor.im2col_batch(
-            dO.astype(np.float32), KH, KW, stride, padding
+            dO.astype(np.float32), KH, KW, strideh, stridew, paddingh, paddingw
         )  # (N, col_row, spatial_in)
 
         W_flat = W.reshape(Cin, col_row)
@@ -144,7 +144,7 @@ class autograd4nn:
             cp = nodeg.node.cp.astype(np.float32)
             nodeg.node.child[0].node.cp += self.maxpool2d_unpool(
                 cp, nodeg.mpctx[1], nodeg.mpctx[2],
-                nodeg.mpctx[3], nodeg.mpctx[4], nodeg.mpctx[5],
+                nodeg.mpctx[3], nodeg.mpctx[4], nodeg.mpctx[5], nodeg.mpctx[6], nodeg.mpctx[7],
             )
 
         # ── Unpooling backward ──
@@ -160,8 +160,10 @@ class autograd4nn:
             W = nodeg.node.child[1].value
             cp = nodeg.node.cp.astype(np.float32)
             dX, dW = self.conv_transpose2d_backward(cp, X, W,
-                                                     stride=nodeg.convTrans[1],
-                                                     padding=nodeg.convTrans[2])
+                                                     strideh=nodeg.convTrans[1],
+                                                     stridew=nodeg.convTrans[2],
+                                                     paddingh=nodeg.convTrans[3],
+                                                     paddingw=nodeg.convTrans[4])
             nodeg.node.child[0].node.cp += dX
             nodeg.node.child[1].node.cp += dW
 
@@ -175,8 +177,10 @@ class autograd4nn:
             W = nodeg.node.child[1].value
             cp = nodeg.node.cp.astype(np.float32)
             dX, dW = self.conv_backward(cp, X, W,
-                                        stride=nodeg.iconv2d[1],
-                                        padding=nodeg.iconv2d[2])
+                                        strideh=nodeg.iconv2d[1],
+                                        stridew=nodeg.iconv2d[2],
+                                        paddingh=nodeg.iconv2d[3],
+                                        paddingw=nodeg.iconv2d[4])
             nodeg.node.child[0].node.cp += dX
             nodeg.node.child[1].node.cp += dW
 
