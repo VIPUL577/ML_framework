@@ -1,13 +1,16 @@
 import numpy as np
 
+# ── Try importing C++ engine (falls back to NumPy if unavailable) ──
 try:
-    from numba import njit, jit
-    HAS_NUMBA = True
+    import seera_cpp
+    _USE_CPP = True
 except ImportError:
-    HAS_NUMBA = False
+    _USE_CPP = False
+    import warnings
+    warnings.warn("C++ engine not found. Using NumPy fallback. Run: python build_engine.py")
 
 # ─────────────────────────────────────────────────────────────
-# Node: stores gradient info and children in the computation graph
+# Node: gradient info and children in the computation graph
 # ─────────────────────────────────────────────────────────────
 class node:
     def __init__(self, child_grad, out=0, node_no=0):
@@ -26,13 +29,11 @@ class node:
 
 # ─────────────────────────────────────────────────────────────
 # Tensor: core data structure with autograd support
-# Convention: batch dimension is axis 0 for all operations
-#   Dense:  (N, features)
-#   Conv:   (N, C, H, W)
+# Batch dim is axis 0:  Dense(N, features)  Conv(N, C, H, W)
 # ─────────────────────────────────────────────────────────────
 class tensor(node):
     def __init__(self, value, dtype="float32", is_leaf=False):
-        self.value = np.array(value).astype(dtype)
+        self.value = np.ascontiguousarray(np.array(value).astype(dtype))
         child_grad = (
             [np.zeros_like(self.value), np.zeros_like(self.value)],
             [np.zeros_like(self.value), np.zeros_like(self.value)],
@@ -46,33 +47,15 @@ class tensor(node):
         self.isoftmax = False
         self.iconv2d = (False, 1, 0)
         self.upctx = (False, 0, 0)
-        self.flctx = 0          # flatten context (original shape)
+        self.flctx = 0
         self.mpctx = (False, 0, 0, 0, 1, 0)
         self.iconcatenete = 0
-        self.ibatchnorm = None  # BatchNorm context (set during forward)
-        self.ireduction = None  # Reduction context: {"axis", "keepdims", "scale"}
+        self.ibatchnorm = None
+        self.ireduction = None
         self.convTrans = False
 
         if is_leaf:
             self.node.out = self.value
-
-    # ─── Helpers ─────────────────────────────────────────────
-    @staticmethod
-    def _reduce_broadcast(grad, target_shape):
-        """Sum-reduce *grad* along any axes that were broadcast to match
-        *target_shape*.  E.g. grad (N, out) → bias (1, out) sums axis 0."""
-        if grad.shape == target_shape:
-            return grad
-        # Pad target_shape on the left with 1s so ndims match
-        ndim_diff = grad.ndim - len(target_shape)
-        padded = (1,) * ndim_diff + tuple(target_shape)
-        # Sum along every axis where padded has size 1
-        reduce_axes = tuple(i for i, s in enumerate(padded) if s == 1)
-        out = grad.sum(axis=reduce_axes, keepdims=True)
-        # Remove any extra leading dims we added
-        if ndim_diff > 0:
-            out = out.reshape(target_shape)
-        return out
 
     # ─── Element-wise ops ────────────────────────────────────
     def __add__(self, other):
@@ -80,7 +63,13 @@ class tensor(node):
             other = tensor(other * np.ones_like(self.value))
         elif not isinstance(other, tensor):
             other = tensor(other)
-        out = tensor(self.value + other.value)
+
+        if _USE_CPP and self.value.shape == other.value.shape:
+            result = seera_cpp.add(self.value, other.value)
+        else:
+            result = self.value + other.value
+
+        out = tensor(result)
         child_grad = [
             [self.value, np.ones_like(self.value)],
             [other.value, np.ones_like(other.value)],
@@ -95,7 +84,13 @@ class tensor(node):
             other = tensor(other * np.ones_like(self.value))
         elif not isinstance(other, tensor):
             other = tensor(other)
-        out = tensor(self.value * other.value)
+
+        if _USE_CPP and self.value.shape == other.value.shape:
+            result = seera_cpp.mul(self.value, other.value)
+        else:
+            result = self.value * other.value
+
+        out = tensor(result)
         child_grad = [
             [self.value, other.value],
             [other.value, self.value],
@@ -108,41 +103,25 @@ class tensor(node):
     def __pow__(self, other):
         if not isinstance(other, float):
             other = float(other)
-        out = tensor(self.value ** other)
-        gradient = other * (self.value ** (other - 1))
-        child_grad = [
-            [self.value, gradient],
-            [np.full_like(self.value, np.nan), np.full_like(gradient, np.nan)],
-        ]
-        out.node.child_grad = np.array(child_grad, dtype=object)
-        out.node.out = out.value
-        out.node.child = [self]
-        return out
+        if _USE_CPP:
+            out_val, gradient = seera_cpp.pow_act(
+                np.ascontiguousarray(self.value, dtype=np.float32), other
+            )
+        else:
+            out_val = self.value ** other
+            gradient = other * (self.value ** (other - 1))
+        return self._unary(out_val, gradient)
 
-    def __neg__(self):
-        return self * (-1)
+    def __neg__(self):    return self * (-1)
+    def __sub__(self, other): return self + (-other)
+    def __radd__(self, other): return self + other
+    def __rsub__(self, other): return other + (self * -1)
+    def __rmul__(self, other): return self * other
+    def __truediv__(self, other): return self * other ** -1
+    def __rtruediv__(self, other): return other * self ** -1
 
-    def __sub__(self, other):
-        return self + (-other)
-
-    def __radd__(self, other):
-        return self + other
-
-    def __rsub__(self, other):
-        return other + (self * -1)
-
-    def __rmul__(self, other):
-        return self * other
-
-    def __truediv__(self, other):
-        return self * other ** -1
-
-    def __rtruediv__(self, other):
-        return other * self ** -1
-
-    # ─── Unary math ops ──────────────────────────────────────
+    # ─── Unary op helper ─────────────────────────────────────
     def _unary(self, fwd_val, gradient):
-        """Helper to build a unary op node."""
         out = tensor(fwd_val)
         child_grad = [
             [self.value, gradient],
@@ -153,6 +132,73 @@ class tensor(node):
         out.node.child = [self]
         return out
 
+    # ─── Activations (C++ accelerated) ───────────────────────
+    def relu(self):
+        if _USE_CPP:
+            o, g = seera_cpp.relu(np.ascontiguousarray(self.value, dtype=np.float32))
+        else:
+            o = np.where(self.value > 0, self.value, 0)
+            g = np.where(self.value > 0, 1.0, 0.0)
+        return self._unary(o, g)
+
+    def sigmoid(self):
+        if _USE_CPP:
+            o, g = seera_cpp.sigmoid(np.ascontiguousarray(self.value, dtype=np.float32))
+        else:
+            s = 1 / (1 + np.exp(-self.value))
+            o, g = s, s * (1 - s)
+        return self._unary(o, g)
+
+    def tanh(self):
+        if _USE_CPP:
+            o, g = seera_cpp.tanh_act(np.ascontiguousarray(self.value, dtype=np.float32))
+        else:
+            t = np.tanh(self.value)
+            o, g = t, 1 - t ** 2
+        return self._unary(o, g)
+
+    def log(self):
+        if _USE_CPP:
+            o, g = seera_cpp.log_act(np.ascontiguousarray(self.value, dtype=np.float32))
+        else:
+            o, g = np.log(self.value), 1 / self.value
+        return self._unary(o, g)
+
+    def exp(self):
+        if _USE_CPP:
+            o, g = seera_cpp.exp_act(np.ascontiguousarray(self.value, dtype=np.float32))
+        else:
+            e = np.exp(self.value)
+            o, g = e, e
+        return self._unary(o, g)
+
+    def abs(self):
+        if _USE_CPP:
+            o, g = seera_cpp.abs_act(np.ascontiguousarray(self.value, dtype=np.float32))
+        else:
+            o, g = np.abs(self.value), np.sign(self.value)
+        return self._unary(o, g)
+
+    def sqrt(self):
+        if _USE_CPP:
+            o, g = seera_cpp.sqrt_act(np.ascontiguousarray(self.value, dtype=np.float32))
+        else:
+            s = np.sqrt(self.value)
+            o, g = s, 0.5 / (s + 1e-12)
+        return self._unary(o, g)
+
+    def clip(self, min_val, max_val):
+        if _USE_CPP:
+            o, g = seera_cpp.clip_act(
+                np.ascontiguousarray(self.value, dtype=np.float32), min_val, max_val
+            )
+        else:
+            gradient = np.ones_like(self.value)
+            gradient[self.value < min_val] = 0
+            gradient[self.value > max_val] = 0
+            o, g = np.clip(self.value, min_val, max_val), gradient
+        return self._unary(o, g)
+
     def sin(self):
         return self._unary(np.sin(self.value), np.cos(self.value))
 
@@ -162,61 +208,36 @@ class tensor(node):
     def tan(self):
         return self._unary(np.tan(self.value), 1 / (np.cos(self.value) ** 2))
 
-    def tanh(self):
-        return self._unary(np.tanh(self.value), 1 - np.tanh(self.value) ** 2)
-
-    def relu(self):
-        return self._unary(
-            np.where(self.value > 0, self.value, 0),
-            np.where(self.value > 0, 1.0, 0.0),
-        )
-
-    def sigmoid(self):
-        s = 1 / (1 + np.exp(-self.value))
-        return self._unary(s, s * (1 - s))
-
-    def log(self):
-        return self._unary(np.log(self.value), 1 / self.value)
-
-    def exp(self):
-        return self._unary(np.exp(self.value), np.exp(self.value))
-
-    def abs(self):
-        return self._unary(np.abs(self.value), np.sign(self.value))
-
-    def sqrt(self):
-        return self._unary(np.sqrt(self.value), 0.5 / np.sqrt(self.value))
-
-    def clip(self, min_val, max_val):
-        gradient = np.ones_like(self.value)
-        gradient[self.value < min_val] = 0
-        gradient[self.value > max_val] = 0
-        return self._unary(np.clip(self.value, min_val, max_val), gradient)
-
-    # ─── Softmax (batched, VJP-based) ────────────────────────
+    # ─── Softmax (C++ accelerated, VJP-based) ────────────────
     def softmax(self, axis=-1):
-        """Batched softmax along *axis* (default: last axis).
-        Stores the softmax output for efficient VJP backward."""
-        shifted = self.value - np.max(self.value, axis=axis, keepdims=True)
-        exps = np.exp(shifted)
-        s = exps / np.sum(exps, axis=axis, keepdims=True)
+        x = np.ascontiguousarray(self.value, dtype=np.float32)
+        if _USE_CPP and x.ndim >= 2:
+            s = seera_cpp.softmax(x)
+        else:
+            shifted = x - np.max(x, axis=axis, keepdims=True)
+            exps = np.exp(shifted)
+            s = exps / np.sum(exps, axis=axis, keepdims=True)
 
         out = tensor(s)
         out.isoftmax = True
-        # Store softmax output and axis in child_grad for backward
         child_grad = np.empty((1, 2), dtype=object)
         child_grad[0, 0] = self.value
-        child_grad[0, 1] = s  # softmax output (not Jacobian)
+        child_grad[0, 1] = s  # softmax output for VJP backward
         out.node.child_grad = child_grad
         out.node.out = out.value
         out.node.child = [self]
         return out
 
-    # ─── Matmul (batched) ────────────────────────────────────
+    # ─── Matmul (C++ accelerated via OpenBLAS) ───────────────
     def matmul(self, other):
-        """Matrix multiply: (N, in) @ (in, out) → (N, out)
-        Also handles non-batched cases via standard np matmul."""
-        out = tensor(self.value @ other.value)
+        a = np.ascontiguousarray(self.value, dtype=np.float32)
+        b = np.ascontiguousarray(other.value, dtype=np.float32)
+        if _USE_CPP and a.ndim == 2 and b.ndim == 2:
+            result = seera_cpp.matmul(a, b)
+        else:
+            result = a @ b
+
+        out = tensor(result)
         out.node.child = [self, other]
         out.matm = True
         out.node.out = out.value
@@ -234,12 +255,11 @@ class tensor(node):
         out = tensor(s)
         out.node.out = out.value
         out.node.child = [self]
-        # Store reduction context for backward
         out.ireduction = {
             "input_shape": self.value.shape,
             "axis": axis,
             "keepdims": keepdims,
-            "scale": 1.0,  # sum gradient is 1
+            "scale": 1.0,
         }
         return out
 
@@ -259,7 +279,7 @@ class tensor(node):
             "input_shape": self.value.shape,
             "axis": axis,
             "keepdims": keepdims,
-            "scale": 1.0 / n,  # mean gradient is 1/N
+            "scale": 1.0 / n,
         }
         return out
 
@@ -312,35 +332,16 @@ class tensor(node):
         return out
 
     def squeeze(self, axis=None):
-        out = tensor(np.squeeze(self.value, axis=axis))
-        out.node.child = [self]
-        gradient = np.ones_like(self.value)
-        child_grad = [
-            [self.value, gradient],
-            [np.full_like(self.value, np.nan), np.full_like(gradient, np.nan)],
-        ]
-        out.node.child_grad = np.array(child_grad, dtype=object)
-        out.node.out = out.value
-        return out
+        return self._unary(np.squeeze(self.value, axis=axis), np.ones_like(self.value))
 
     def unsqueeze(self, axis):
-        out = tensor(np.expand_dims(self.value, axis=axis))
-        out.node.child = [self]
-        gradient = np.ones_like(self.value)
-        child_grad = [
-            [self.value, gradient],
-            [np.full_like(self.value, np.nan), np.full_like(gradient, np.nan)],
-        ]
-        out.node.child_grad = np.array(child_grad, dtype=object)
-        out.node.out = out.value
-        return out
+        return self._unary(np.expand_dims(self.value, axis=axis), np.ones_like(self.value))
 
     def flatten(self):
-        """Flatten preserving batch dimension: (N, ...) → (N, flat_size)"""
         original_shape = self.value.shape
         N = original_shape[0]
         out = tensor(self.value.reshape(N, -1))
-        out.flctx = original_shape  # saved for backward reshape
+        out.flctx = original_shape
         out.node.child = [self]
         return out
 
@@ -348,9 +349,9 @@ class tensor(node):
         out = tensor(self.value[key])
         out.node.child = [self]
         gradient = np.zeros_like(self.value)
-        sliced_positions = np.zeros_like(self.value, dtype=bool)
-        sliced_positions[key] = True
-        gradient[sliced_positions] = 1.0
+        sliced = np.zeros_like(self.value, dtype=bool)
+        sliced[key] = True
+        gradient[sliced] = 1.0
         child_grad = [
             [self.value, gradient],
             [np.full_like(self.value, np.nan), np.full_like(gradient, np.nan)],
@@ -359,80 +360,23 @@ class tensor(node):
         out.node.out = out.value
         return out
 
-    # ─── im2col / col2im  (pure NumPy, batched) ─────────────
-    @staticmethod
-    def im2col_batch(X, KH, KW, stride=1, pad=0):
-        """Vectorized im2col for batched input.
-        X: (N, C, H, W)  →  cols: (N, C*KH*KW, OH*OW)
-        """
-        N, C, H, W = X.shape
-        OH = (H + 2 * pad - KH) // stride + 1
-        OW = (W + 2 * pad - KW) // stride + 1
-
-        if pad > 0:
-            X = np.pad(X, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode="constant")
-
-        # Use stride tricks for zero-copy view
-        _, _, Hp, Wp = X.shape
-        s_n, s_c, s_h, s_w = X.strides
-        shape = (N, C, KH, KW, OH, OW)
-        strides = (s_n, s_c, s_h * stride, s_w * stride, s_h, s_w)
-        # Wait — stride tricks for im2col needs the *inner* patch strides
-        # to step by 1, and the *outer* window position to step by stride.
-        # shape: (N, C, OH, OW, KH, KW)
-        shape = (N, C, OH, OW, KH, KW)
-        strides = (s_n, s_c, s_h * stride, s_w * stride, s_h, s_w)
-        col = np.lib.stride_tricks.as_strided(X, shape=shape, strides=strides)
-        # col: (N, C, OH, OW, KH, KW) → (N, C*KH*KW, OH*OW)
-        col = col.reshape(N, C * KH * KW, OH * OW)
-        # Make contiguous copy (stride tricks creates a view which may cause
-        # issues with later operations)
-        return np.ascontiguousarray(col)
-
-    @staticmethod
-    def col2im_batch(cols, X_shape, KH, KW, stride=1, pad=0):
-        """Inverse of im2col_batch.  Accumulates overlapping patches.
-        cols: (N, C*KH*KW, OH*OW)  →  X: (N, C, H, W)
-        """
-        N, C, H, W = X_shape
-        OH = (H + 2 * pad - KH) // stride + 1
-        OW = (W + 2 * pad - KW) // stride + 1
-
-        Hp, Wp = H + 2 * pad, W + 2 * pad
-        X_padded = np.zeros((N, C, Hp, Wp), dtype=cols.dtype)
-
-        cols_reshaped = cols.reshape(N, C, KH, KW, OH, OW)
-        for i in range(KH):
-            i_end = i + stride * OH
-            for j in range(KW):
-                j_end = j + stride * OW
-                X_padded[:, :, i:i_end:stride, j:j_end:stride] += cols_reshaped[:, :, i, j, :, :]
-
-        if pad > 0:
-            return X_padded[:, :, pad:-pad, pad:-pad]
-        return X_padded
-
-    # ─── Conv2D forward (batched) ────────────────────────────
+    # ─── Conv2D forward (C++ accelerated) ────────────────────
     def conv2d(self, W, stride=1, padding=0):
-        """Batched conv2d: self (N, C, H, W)  *  W (F, C, KH, KW)
-        → out (N, F, OH, OW)"""
-        x = self.value
+        x = np.ascontiguousarray(self.value, dtype=np.float32)
+        w = np.ascontiguousarray(W.value, dtype=np.float32)
         if x.ndim == 3:
-            # Single sample: add batch dim
             x = x[np.newaxis]
-        N, C, H, W_in = x.shape
-        F, _, KH, KW = W.value.shape
 
-        OH = (H + 2 * padding - KH) // stride + 1
-        OW = (W_in + 2 * padding - KW) // stride + 1
-
-        # im2col: (N, C*KH*KW, OH*OW)
-        col = tensor.im2col_batch(x.astype(np.float32), KH, KW, stride, padding)
-        W_col = W.value.reshape(F, -1)  # (F, C*KH*KW)
-
-        # Batched matmul: (N, F, C*KH*KW) @ (N, C*KH*KW, OH*OW) → (N, F, OH*OW)
-        out_val = np.einsum("fc,ncp->nfp", W_col, col)  # broadcast W across batch
-        out_val = out_val.reshape(N, F, OH, OW)
+        if _USE_CPP:
+            out_val = seera_cpp.conv2d_forward(x, w, stride, padding)
+        else:
+            N, C, H, W_in = x.shape
+            F, _, KH, KW = w.shape
+            OH = (H + 2 * padding - KH) // stride + 1
+            OW = (W_in + 2 * padding - KW) // stride + 1
+            col = tensor.im2col_batch(x, KH, KW, stride, padding)
+            W_col = w.reshape(F, -1)
+            out_val = np.einsum("fc,ncp->nfp", W_col, col).reshape(N, F, OH, OW)
 
         out = tensor(out_val)
         out.iconv2d = (True, stride, padding)
@@ -440,28 +384,26 @@ class tensor(node):
         out.node.child = [self, W]
         return out
 
-    # ─── MaxPool2D forward (batched) ─────────────────────────
+    # ─── MaxPool2D forward (C++ accelerated) ─────────────────
     def maxpool2d(self, kernelsize, stride=1, padding=0):
-        """Batched maxpool: self (N, C, H, W) → out (N, C, OH, OW)"""
         if not isinstance(kernelsize, tuple):
             raise ValueError("kernelsize should be a tuple (height, width)")
         KH, KW = kernelsize
-        img = self.value
+        img = np.ascontiguousarray(self.value, dtype=np.float32)
         if img.ndim == 3:
             img = img[np.newaxis]
-        N, C, H, W = img.shape
-        OH = (H + 2 * padding - KH) // stride + 1
-        OW = (W + 2 * padding - KW) // stride + 1
 
-        # im2col: (N, C*KH*KW, OH*OW)
-        col = tensor.im2col_batch(img.astype(np.float32), KH, KW, stride, padding)
-        # Reshape to (N, C, KH*KW, OH*OW) to pool over kernel window
-        col = col.reshape(N, C, KH * KW, OH * OW)
-
-        mask = np.argmax(col, axis=2)         # (N, C, OH*OW)
-        out_val = np.max(col, axis=2)         # (N, C, OH*OW)
-        out_val = out_val.reshape(N, C, OH, OW)
-        mask = mask.reshape(N, C, OH, OW)
+        if _USE_CPP:
+            out_val, mask = seera_cpp.maxpool2d_forward(img, KH, KW, stride, padding)
+            mask = np.array(mask, dtype=np.int32)
+        else:
+            N, C, H, W = img.shape
+            OH = (H + 2 * padding - KH) // stride + 1
+            OW = (W + 2 * padding - KW) // stride + 1
+            col = tensor.im2col_batch(img, KH, KW, stride, padding)
+            col = col.reshape(N, C, KH * KW, OH * OW)
+            mask = np.argmax(col, axis=2).reshape(N, C, OH, OW)
+            out_val = np.max(col, axis=2).reshape(N, C, OH, OW)
 
         out = tensor(out_val)
         out.mpctx = (True, mask, self.value.shape, kernelsize, stride, padding)
@@ -469,14 +411,11 @@ class tensor(node):
         out.node.child = [self]
         return out
 
-    # ─── Concatenate (batched, along channel axis) ───────────
+    # ─── Concatenate ─────────────────────────────────────────
     def concatenete(self, other):
-        """Concatenate along axis=1 (channel dim) for (N, C, H, W) inputs,
-        or along axis=0 for 1-D/2-D inputs."""
         if self.value.ndim >= 3 and other.value.ndim >= 3:
-            # 4-D batched: concat along channels (axis=1)
             out = tensor(np.concatenate([self.value, other.value], axis=1))
-            out.iconcatenete = self.value.shape[1]  # split point
+            out.iconcatenete = self.value.shape[1]
         else:
             out = tensor(np.concatenate([self.value, other.value], axis=0))
             out.iconcatenete = self.value.shape[0]
@@ -484,74 +423,107 @@ class tensor(node):
         out.node.out = out.value
         return out
 
-    # ─── Upsample2D Nearest (batched) ────────────────────────
+    # ─── Upsample Nearest (C++ accelerated) ──────────────────
     def UpSample2Dnearest(self, size):
-        """Nearest-neighbor upsample: (N, C, H, W) → (N, C, H*sh, W*sw)"""
-        x = self.value
+        x = np.ascontiguousarray(self.value, dtype=np.float32)
         if x.ndim == 3:
             x = x[np.newaxis]
         sw, sh = size
-        x_up = np.repeat(np.repeat(x, sh, axis=2), sw, axis=3)
+
+        if _USE_CPP:
+            x_up = seera_cpp.upsample_forward(x, sh, sw)
+        else:
+            x_up = np.repeat(np.repeat(x, sh, axis=2), sw, axis=3)
+
         out = tensor(x_up)
         out.node.child = [self]
         out.node.out = out.value
         out.upctx = (True, self.value.shape, size)
         return out
 
-    # ─── BatchNorm forward ───────────────────────────────────
+    # ─── BatchNorm forward (C++ accelerated) ─────────────────
     def batchnorm(self, gamma, beta, running_mean, running_var,
                   training=True, momentum=0.1, eps=1e-5, mode="1d"):
-        """BatchNorm forward.
-        self: input tensor (N, features) for 1d or (N, C, H, W) for 2d.
-        gamma, beta: learnable scale/shift tensors.
-        running_mean, running_var: numpy arrays (updated in-place).
-        Returns output tensor with ibatchnorm context for backward.
-        """
-        x = self.value
+        x = np.ascontiguousarray(self.value, dtype=np.float32)
+        is_2d = (mode == "2d")
 
-        if mode == "2d":
-            # Normalize over N, H, W (per channel)
-            reduce_axes = (0, 2, 3)
-            broadcast_shape = (1, -1, 1, 1)
+        if _USE_CPP:
+            g = np.ascontiguousarray(gamma.value, dtype=np.float32)
+            b = np.ascontiguousarray(beta.value, dtype=np.float32)
+            rm = np.ascontiguousarray(running_mean, dtype=np.float32)
+            rv = np.ascontiguousarray(running_var, dtype=np.float32)
+
+            y, x_hat, std_inv = seera_cpp.batchnorm_forward(
+                x, g, b, rm, rv, momentum, eps, training, is_2d
+            )
+            # Copy running stats back (they were updated in-place in C++)
+            running_mean[:] = rm
+            running_var[:] = rv
+
+            N_elements = x.size // gamma.value.size
         else:
-            # Normalize over N (per feature)
-            reduce_axes = (0,)
-            broadcast_shape = (1, -1)
-
-        if training:
-            mu = np.mean(x, axis=reduce_axes)
-            var = np.var(x, axis=reduce_axes)
-            # Update running stats (in-place on numpy arrays)
-            running_mean[:] = (1 - momentum) * running_mean + momentum * mu
-            running_var[:] = (1 - momentum) * running_var + momentum * var
-        else:
-            mu = running_mean
-            var = running_var
-
-        # Normalize
-        mu_b = mu.reshape(broadcast_shape)
-        var_b = var.reshape(broadcast_shape)
-        std_inv = 1.0 / np.sqrt(var_b + eps)
-        x_hat = (x - mu_b) * std_inv
-
-        gamma_b = gamma.value.reshape(broadcast_shape)
-        beta_b = beta.value.reshape(broadcast_shape)
-        y = gamma_b * x_hat + beta_b
+            reduce_axes = (0, 2, 3) if is_2d else (0,)
+            broadcast_shape = (1, -1, 1, 1) if is_2d else (1, -1)
+            if training:
+                mu = np.mean(x, axis=reduce_axes)
+                var = np.var(x, axis=reduce_axes)
+                running_mean[:] = (1 - momentum) * running_mean + momentum * mu
+                running_var[:] = (1 - momentum) * running_var + momentum * var
+            else:
+                mu, var = running_mean, running_var
+            mu_b = mu.reshape(broadcast_shape)
+            var_b = var.reshape(broadcast_shape)
+            std_inv_scalar = 1.0 / np.sqrt(var_b + eps)
+            x_hat = (x - mu_b) * std_inv_scalar
+            gamma_b = gamma.value.reshape(broadcast_shape)
+            beta_b = beta.value.reshape(broadcast_shape)
+            y = gamma_b * x_hat + beta_b
+            std_inv = (1.0 / np.sqrt(var + eps)).astype(np.float32)
+            N_elements = x.size // gamma.value.size
 
         out = tensor(y)
         out.node.child = [self, gamma, beta]
         out.node.out = out.value
-
-        # Store context for backward
         out.ibatchnorm = {
             "x_hat": x_hat,
             "std_inv": std_inv,
             "gamma": gamma.value,
-            "reduce_axes": reduce_axes,
-            "broadcast_shape": broadcast_shape,
-            "N_elements": x.size // gamma.value.size,  # elements per feature
+            "N_elements": N_elements,
+            "is_2d": is_2d,
         }
         return out
+
+    # ─── NumPy fallback im2col/col2im (used when C++ unavailable) ──
+    @staticmethod
+    def im2col_batch(X, KH, KW, stride=1, pad=0):
+        N, C, H, W = X.shape
+        OH = (H + 2 * pad - KH) // stride + 1
+        OW = (W + 2 * pad - KW) // stride + 1
+        if pad > 0:
+            X = np.pad(X, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode="constant")
+        _, _, Hp, Wp = X.shape
+        s_n, s_c, s_h, s_w = X.strides
+        shape = (N, C, OH, OW, KH, KW)
+        strides = (s_n, s_c, s_h * stride, s_w * stride, s_h, s_w)
+        col = np.lib.stride_tricks.as_strided(X, shape=shape, strides=strides)
+        return np.ascontiguousarray(col.reshape(N, C * KH * KW, OH * OW))
+
+    @staticmethod
+    def col2im_batch(cols, X_shape, KH, KW, stride=1, pad=0):
+        N, C, H, W = X_shape
+        OH = (H + 2 * pad - KH) // stride + 1
+        OW = (W + 2 * pad - KW) // stride + 1
+        Hp, Wp = H + 2 * pad, W + 2 * pad
+        X_padded = np.zeros((N, C, Hp, Wp), dtype=cols.dtype)
+        cols_reshaped = cols.reshape(N, C, KH, KW, OH, OW)
+        for i in range(KH):
+            i_end = i + stride * OH
+            for j in range(KW):
+                j_end = j + stride * OW
+                X_padded[:, :, i:i_end:stride, j:j_end:stride] += cols_reshaped[:, :, i, j, :, :]
+        if pad > 0:
+            return X_padded[:, :, pad:-pad, pad:-pad]
+        return X_padded
 
     # ─── Factory methods ─────────────────────────────────────
     @classmethod
@@ -576,9 +548,7 @@ class tensor(node):
 
     @classmethod
     def arange(cls, start, stop=None, step=1, dtype="float32"):
-        if stop is None:
-            stop = start
-            start = 0
+        if stop is None: stop = start; start = 0
         return cls(np.arange(start, stop, step), dtype=dtype, is_leaf=True)
 
     @classmethod
