@@ -162,4 +162,114 @@ void conv2d_backward(const float* dout, const float* X, const float* W,
     delete[] dX_col;
 }
 
+// ── ConvTranspose2D Forward ─────────────────────────────────
+// X(N,Cin,H,Win), W(Cin,Cout,KH,KW) → out(N,Cout,Hout,Wout)
+// Hout = (H-1)*stride - 2*pad + KH
+// Wout = (Win-1)*stride - 2*pad + KW
+//
+// For each sample n:
+//   X_flat = X[n].reshape(Cin, H*Win)
+//   W_flat = W.reshape(Cin, Cout*KH*KW)
+//   col = W_flat.T @ X_flat   → (Cout*KH*KW, H*Win)
+//   out[n] = col2im(col, ...)
+void conv_transpose2d_forward(const float* X, const float* W, float* out,
+                              int N, int Cin, int H, int Win,
+                              int Cout, int KH, int KW,
+                              int stride, int pad) {
+    int Hout = (H - 1) * stride - 2 * pad + KH;
+    int Wout = (Win - 1) * stride - 2 * pad + KW;
+    int col_row = Cout * KH * KW;     // rows of col matrix
+    int spatial_in = H * Win;          // columns of col matrix (input spatial)
+
+    // Allocate col buffer for all samples
+    float* col = new float[N * col_row * spatial_in];
+
+    // GEMM: col[n] = W_flat.T(col_row, Cin) @ X_flat[n](Cin, spatial_in)
+    #pragma omp parallel for schedule(static)
+    for (int n = 0; n < N; n++) {
+        const float* xn = X + n * Cin * spatial_in;
+        float* cn = col + n * col_row * spatial_in;
+        // W is (Cin, Cout*KH*KW) in memory = W_flat
+        // We need W_flat.T @ X_flat = (Cout*KH*KW, Cin) @ (Cin, spatial_in)
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    col_row, spatial_in, Cin,
+                    1.0f, W, col_row,          // W(Cin, col_row) transposed
+                          xn, spatial_in,       // X_flat(Cin, spatial_in)
+                    0.0f, cn, spatial_in);      // col(col_row, spatial_in)
+    }
+
+    // col2im: scatter col into output (N, Cout, Hout, Wout)
+    // NOTE: col2im expects col as (Cout*KH*KW, OH*OW) where the output
+    // of col2im has shape (N, Cout, Hout, Wout). Here the "image" being
+    // reconstructed is the output, and the "patches" come from the input spatial locs.
+    // We need to use col2im with the OUTPUT dimensions as the "image" dims.
+    // The col matrix has shape (Cout*KH*KW, H*Win) where H*Win are the
+    // number of spatial positions in the input (which correspond to the
+    // "patch locations" in col2im with stride and pad).
+    col2im_batch(col, out, N, Cout, Hout, Wout, KH, KW, stride, pad);
+
+    delete[] col;
+}
+
+// ── ConvTranspose2D Backward ────────────────────────────────
+// dout(N,Cout,Hout,Wout), X(N,Cin,H,Win), W(Cin,Cout,KH,KW)
+// → dX(N,Cin,H,Win), dW(Cin,Cout,KH,KW)
+void conv_transpose2d_backward(const float* dout, const float* X, const float* W,
+                               float* dX, float* dW,
+                               int N, int Cin, int H, int Win,
+                               int Cout, int KH, int KW,
+                               int stride, int pad) {
+    int Hout = (H - 1) * stride - 2 * pad + KH;
+    int Wout = (Win - 1) * stride - 2 * pad + KW;
+    int col_row = Cout * KH * KW;
+    int spatial_in = H * Win;
+
+    // im2col on dout: extract patches from dout
+    // This gives us col_dout(N, Cout*KH*KW, H*Win)
+    // where H*Win = number of output patches using (Hout, Wout) as image with KH,KW,stride,pad
+    float* col_dout = new float[N * col_row * spatial_in];
+    im2col_batch(dout, col_dout, N, Cout, Hout, Wout, KH, KW, stride, pad);
+
+    // ─── dW = sum_n( X_flat[n] @ col_dout[n].T ) ───
+    // X_flat[n]: (Cin, spatial_in),  col_dout[n]: (col_row, spatial_in)
+    // dW_n = X_flat @ col_dout.T → (Cin, col_row) = (Cin, Cout*KH*KW)
+    std::memset(dW, 0, Cin * col_row * sizeof(float));
+    float* dW_local = new float[N * Cin * col_row];
+
+    #pragma omp parallel for schedule(static)
+    for (int n = 0; n < N; n++) {
+        const float* xn = X + n * Cin * spatial_in;
+        const float* cn = col_dout + n * col_row * spatial_in;
+        float* dwn = dW_local + n * Cin * col_row;
+        // dwn = X_flat(Cin, spatial_in) @ col_dout.T(spatial_in, col_row)
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    Cin, col_row, spatial_in,
+                    1.0f, xn, spatial_in,
+                          cn, spatial_in,
+                    0.0f, dwn, col_row);
+    }
+    // Sum dW contributions across batch
+    for (int n = 0; n < N; n++) {
+        const float* dwn = dW_local + n * Cin * col_row;
+        for (int i = 0; i < Cin * col_row; i++) dW[i] += dwn[i];
+    }
+    delete[] dW_local;
+
+    // ─── dX: dX_flat[n] = W_flat @ col_dout[n] ───
+    // W_flat: (Cin, col_row),  col_dout[n]: (col_row, spatial_in)
+    // dX_flat = (Cin, spatial_in)
+    #pragma omp parallel for schedule(static)
+    for (int n = 0; n < N; n++) {
+        const float* cn = col_dout + n * col_row * spatial_in;
+        float* dxn = dX + n * Cin * spatial_in;
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    Cin, spatial_in, col_row,
+                    1.0f, W, col_row,
+                          cn, spatial_in,
+                    0.0f, dxn, spatial_in);
+    }
+
+    delete[] col_dout;
+}
+
 } // namespace seera

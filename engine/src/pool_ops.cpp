@@ -72,8 +72,8 @@ void maxpool2d_backward(const float* dout, const int32_t* mask, float* dX,
     }
 }
 
-// ── Upsample Nearest Forward ────────────────────────────────
-void upsample_fwd(const float* x, float* out,
+// ── Unpooling Nearest Forward ───────────────────────────────
+void unpooling_fwd(const float* x, float* out,
                   int N, int C, int H, int W, int sh, int sw) {
     int Ho = H * sh, Wo = W * sw;
     #pragma omp parallel for collapse(2) schedule(static)
@@ -89,8 +89,8 @@ void upsample_fwd(const float* x, float* out,
     }
 }
 
-// ── Upsample Nearest Backward ───────────────────────────────
-void upsample_bwd(const float* dout, float* dx,
+// ── Unpooling Nearest Backward ──────────────────────────────
+void unpooling_bwd(const float* dout, float* dx,
                   int N, int C, int H, int W, int sh, int sw) {
     int Ho = H * sh, Wo = W * sw;
     std::memset(dx, 0, N * C * H * W * sizeof(float));

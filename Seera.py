@@ -238,9 +238,9 @@ class Flatten(Layer):
 
 
 # ─────────────────────────────────────────────────────────────
-# UpSampling2D (Nearest, batched)
+# Unpool2D_Nearest (nearest-neighbor unpooling, no learnable params)
 # ─────────────────────────────────────────────────────────────
-class UpSampling2D_Nearest(Layer):
+class Unpool2D_Nearest(Layer):
     def __init__(self, size=(2, 2)):
         super().__init__()
         self.size = size
@@ -253,11 +253,108 @@ class UpSampling2D_Nearest(Layer):
 
     def forward(self):
         self.inputs = self.inpobj.outputs
-        self.outputs = Tensor.UpSample2Dnearest(self.inputs, size=self.size)
+        self.outputs = Tensor.Unpool2Dnearest(self.inputs, size=self.size)
         return self.outputs
 
     def __repr__(self):
-        return f"UpSampling2D(size={self.size}, mode=nearest)"
+        return f"Unpool2D_Nearest(size={self.size})"
+
+
+# ─────────────────────────────────────────────────────────────
+# ConvTranspose2D (Transposed Convolution — learnable upsampling)
+# ─────────────────────────────────────────────────────────────
+class ConvTranspose2D(Layer):
+    def __init__(
+        self,
+        out_channels,
+        in_channels,
+        kernel_size,
+        activation,
+        stride=1,
+        zero_padding=0,
+        kernel_initializer="he_normal",
+    ):
+        super().__init__()
+        initializers = {
+            "zeros": 0,
+            "ones": 1,
+            "random_normal": 1,
+            "random_uniform": 0.05,
+            "he_normal": np.sqrt(2 / (in_channels * kernel_size[0] * kernel_size[1])) * 0.1,
+            "he_uniform": np.sqrt(6 / (in_channels * kernel_size[0] * kernel_size[1])) * 0.1,
+            "glorot_normal": np.sqrt(2 / ((in_channels + out_channels) * kernel_size[0] * kernel_size[1])) * 0.1,
+            "glorot_uniform": np.sqrt(6 / ((in_channels + out_channels) * kernel_size[0] * kernel_size[1])) * 0.1,
+        }
+
+        if activation not in self.activations:
+            raise ValueError('Activation must be "relu", "sigmoid", "softmax", or "tanh"')
+        if kernel_initializer not in initializers:
+            raise ValueError(f"Initializer must be one of {list(initializers.keys())}")
+
+        self.layeract = activation
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.zero_padding = zero_padding
+        # Weight: (Cin, Cout, KH, KW)
+        self.weights = Tensor(
+            np.random.normal(
+                loc=0, scale=0.5,
+                size=(in_channels, out_channels, kernel_size[0], kernel_size[1]),
+            ),
+            is_leaf=True,
+        ) * initializers[kernel_initializer]
+        # Bias: (1, Cout, 1, 1) broadcasts over (N, Cout, Hout, Wout)
+        self.bais = 0
+
+    def __call__(self, input_layer):
+        if not isinstance(input_layer, Layer):
+            raise TypeError("The input should be a Layer")
+        self.inpobj = input_layer
+        return self
+
+    def forward(self):
+        self.inputs = self.inpobj.outputs
+        inp = self.inputs.value
+        if inp.ndim == 3:
+            inp = inp[np.newaxis]
+
+        N, Cin, H, W_in = inp.shape
+        Hout = (H - 1) * self.stride - 2 * self.zero_padding + self.kernel_size[0]
+        Wout = (W_in - 1) * self.stride - 2 * self.zero_padding + self.kernel_size[1]
+
+        # Lazy-init bias
+        if isinstance(self.bais, int) or self.bais.shape != (1, self.out_channels, 1, 1):
+            self.bais = Tensor.zeros((1, self.out_channels, 1, 1))
+
+        self.z = Tensor.conv_transpose2d(
+            self.inputs, self.weights,
+            stride=self.stride, padding=self.zero_padding,
+        ) + self.bais
+        self.outputs = self.activations[self.layeract](self.z)
+        return self.outputs
+
+    def set_weights(self, W, B):
+        if isinstance(W, np.ndarray):
+            self.weights = Tensor(W, is_leaf=True)
+            self.bais = Tensor(B, is_leaf=True)
+        elif isinstance(W, Tensor):
+            self.weights = W
+            self.bais = B
+
+    def update_params(self, vW, vB):
+        self.weights.value -= vW
+        self.bais.value -= vB
+
+    def get_weights(self):
+        return self.weights, self.bais
+
+    def __repr__(self):
+        return (
+            f"ConvTranspose2D({self.in_channels}→{self.out_channels}, "
+            f"kernel={self.kernel_size}, stride={self.stride}, act={self.layeract})"
+        )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -587,8 +684,17 @@ class Sequential:
                     "stride": layer.stride,
                     "padding": layer.padding,
                 }
-            elif isinstance(layer, UpSampling2D_Nearest):
+            elif isinstance(layer, Unpool2D_Nearest):
                 layer_info["config"] = {"size": layer.size}
+            elif isinstance(layer, ConvTranspose2D):
+                layer_info["config"] = {
+                    "out_channels": layer.out_channels,
+                    "in_channels": layer.in_channels,
+                    "kernel_size": layer.kernel_size,
+                    "layeract": layer.layeract,
+                    "stride": layer.stride,
+                    "zero_padding": layer.zero_padding,
+                }
 
             if hasattr(layer, "get_weights"):
                 w, b = layer.get_weights()
@@ -645,8 +751,17 @@ class Sequential:
                     layer.bais = layer.beta
             elif class_name == "Flatten":
                 layer = Flatten()
-            elif class_name == "UpSampling2D_Nearest":
-                layer = UpSampling2D_Nearest(size=config["size"])
+            elif class_name == "Unpool2D_Nearest" or class_name == "UpSampling2D_Nearest":
+                layer = Unpool2D_Nearest(size=config["size"])
+            elif class_name == "ConvTranspose2D":
+                layer = ConvTranspose2D(
+                    config["out_channels"], config["in_channels"],
+                    config["kernel_size"], activation=config["layeract"],
+                    stride=config.get("stride", 1),
+                    zero_padding=config.get("zero_padding", 0),
+                )
+                if "weights" in info:
+                    layer.set_weights(info["weights"], info["bais"])
             elif class_name == "MaxPool2D":
                 layer = MaxPool2D(
                     pool_size=config["pool_size"],

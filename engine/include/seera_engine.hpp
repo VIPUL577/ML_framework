@@ -57,11 +57,25 @@ void maxpool2d_backward(const float* dout, const int32_t* mask, float* dX,
                         int OH, int OW, int KH, int KW,
                         int stride, int pad);
 
-// ── Upsample Nearest ──────────────────────────────────────
-void upsample_fwd(const float* x, float* out,
-                  int N, int C, int H, int W, int sh, int sw);
-void upsample_bwd(const float* dout, float* dx,
-                  int N, int C, int H, int W, int sh, int sw);
+// ── Unpooling Nearest ─────────────────────────────────────
+void unpooling_fwd(const float* x, float* out,
+                   int N, int C, int H, int W, int sh, int sw);
+void unpooling_bwd(const float* dout, float* dx,
+                   int N, int C, int H, int W, int sh, int sw);
+
+// ── ConvTranspose2D ──────────────────────────────────────
+// X(N,Cin,H,W), W(Cin,Cout,KH,KW) → out(N,Cout,Hout,Wout)
+// Hout = (H-1)*stride - 2*pad + KH
+void conv_transpose2d_forward(const float* X, const float* W, float* out,
+                              int N, int Cin, int H, int Win,
+                              int Cout, int KH, int KW,
+                              int stride, int pad);
+
+void conv_transpose2d_backward(const float* dout, const float* X, const float* W,
+                               float* dX, float* dW,
+                               int N, int Cin, int H, int Win,
+                               int Cout, int KH, int KW,
+                               int stride, int pad);
 
 // ── BatchNorm ──────────────────────────────────────────────
 // 1D: input (N, C).   2D: input (N, C, H, W).

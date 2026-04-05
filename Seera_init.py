@@ -46,13 +46,13 @@ class tensor(node):
         self.matm = False
         self.isoftmax = False
         self.iconv2d = (False, 1, 0)
-        self.upctx = (False, 0, 0)
+        self.unpoolctx = (False, 0, 0)
         self.flctx = 0
         self.mpctx = (False, 0, 0, 0, 1, 0)
         self.iconcatenete = 0
         self.ibatchnorm = None
         self.ireduction = None
-        self.convTrans = False
+        self.convTrans = (False, 1, 0)
 
         if is_leaf:
             self.node.out = self.value
@@ -423,22 +423,56 @@ class tensor(node):
         out.node.out = out.value
         return out
 
-    # ─── Upsample Nearest (C++ accelerated) ──────────────────
-    def UpSample2Dnearest(self, size):
+    # ─── Unpool2D Nearest (C++ accelerated) ──────────────────
+    def Unpool2Dnearest(self, size):
         x = np.ascontiguousarray(self.value, dtype=np.float32)
         if x.ndim == 3:
             x = x[np.newaxis]
         sw, sh = size
 
         if _USE_CPP:
-            x_up = seera_cpp.upsample_forward(x, sh, sw)
+            x_up = seera_cpp.unpooling_forward(x, sh, sw)
         else:
             x_up = np.repeat(np.repeat(x, sh, axis=2), sw, axis=3)
 
         out = tensor(x_up)
         out.node.child = [self]
         out.node.out = out.value
-        out.upctx = (True, self.value.shape, size)
+        out.unpoolctx = (True, self.value.shape, size)
+        return out
+
+    # ─── ConvTranspose2D forward (C++ accelerated) ───────────
+    def conv_transpose2d(self, W, stride=1, padding=0):
+        x = np.ascontiguousarray(self.value, dtype=np.float32)
+        w = np.ascontiguousarray(W.value, dtype=np.float32)
+        if x.ndim == 3:
+            x = x[np.newaxis]
+
+        if _USE_CPP:
+            out_val = seera_cpp.conv_transpose2d_forward(x, w, stride, padding)
+        else:
+            # NumPy fallback
+            N, Cin, H, Win = x.shape
+            _, Cout, KH, KW = w.shape
+            Hout = (H - 1) * stride - 2 * padding + KH
+            Wout = (Win - 1) * stride - 2 * padding + KW
+            col_row = Cout * KH * KW
+            spatial_in = H * Win
+            # W_flat: (Cin, Cout*KH*KW), X_flat: (N, Cin, H*Win)
+            W_flat = w.reshape(Cin, col_row)
+            X_flat = x.reshape(N, Cin, spatial_in)
+            # col = W_flat.T @ X_flat  per sample → (N, col_row, spatial_in)
+            col = np.einsum('cr,ncs->nrs', W_flat, X_flat)
+            # col2im to scatter into output
+            out_val = tensor.col2im_batch(
+                col.reshape(N, col_row, spatial_in),
+                (N, Cout, Hout, Wout), KH, KW, stride, padding,
+            )
+
+        out = tensor(out_val)
+        out.convTrans = (True, stride, padding)
+        out.node.out = out.value
+        out.node.child = [self, W]
         return out
 
     # ─── BatchNorm forward (C++ accelerated) ─────────────────

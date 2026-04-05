@@ -154,20 +154,50 @@ PYBIND11_MODULE(seera_cpp, m) {
     });
 
     // ── Upsample Forward ────────────────────────────────────
-    m.def("upsample_forward", [](arr_f X, int sh, int sw) -> arr_f {
+    m.def("unpooling_forward", [](arr_f X, int sh, int sw) -> arr_f {
         auto xb = X.request();
         int N = xb.shape[0], C = xb.shape[1], H = xb.shape[2], W = xb.shape[3];
         arr_f out({(ssize_t)N, (ssize_t)C, (ssize_t)(H*sh), (ssize_t)(W*sw)});
-        seera::upsample_fwd(X.data(), out.mutable_data(), N, C, H, W, sh, sw);
+        seera::unpooling_fwd(X.data(), out.mutable_data(), N, C, H, W, sh, sw);
         return out;
     });
 
     // ── Upsample Backward ───────────────────────────────────
-    m.def("upsample_backward", [](arr_f dout, int N, int C, int H, int W,
+    m.def("unpooling_backward", [](arr_f dout, int N, int C, int H, int W,
                                   int sh, int sw) -> arr_f {
         arr_f dx({(ssize_t)N, (ssize_t)C, (ssize_t)H, (ssize_t)W});
-        seera::upsample_bwd(dout.data(), dx.mutable_data(), N, C, H, W, sh, sw);
+        seera::unpooling_bwd(dout.data(), dx.mutable_data(), N, C, H, W, sh, sw);
         return dx;
+    });
+
+    // ── ConvTranspose2D Forward ─────────────────────────────
+    m.def("conv_transpose2d_forward", [](arr_f X, arr_f W,
+                                        int stride, int pad) -> arr_f {
+        auto xb = X.request();
+        auto wb = W.request();
+        int N = xb.shape[0], Cin = xb.shape[1], H = xb.shape[2], Wi = xb.shape[3];
+        int Cout = wb.shape[1], KH = wb.shape[2], KW = wb.shape[3];
+        int Hout = (H - 1) * stride - 2 * pad + KH;
+        int Wout = (Wi - 1) * stride - 2 * pad + KW;
+        arr_f out({(ssize_t)N, (ssize_t)Cout, (ssize_t)Hout, (ssize_t)Wout});
+        seera::conv_transpose2d_forward(X.data(), W.data(), out.mutable_data(),
+                                        N, Cin, H, Wi, Cout, KH, KW, stride, pad);
+        return out;
+    });
+
+    // ── ConvTranspose2D Backward ────────────────────────────
+    m.def("conv_transpose2d_backward", [](arr_f dout, arr_f X, arr_f W,
+                                         int stride, int pad) -> py::tuple {
+        auto xb = X.request();
+        auto wb = W.request();
+        int N = xb.shape[0], Cin = xb.shape[1], H = xb.shape[2], Wi = xb.shape[3];
+        int Cout = wb.shape[1], KH = wb.shape[2], KW = wb.shape[3];
+        arr_f dX(xb.shape);
+        arr_f dW(wb.shape);
+        seera::conv_transpose2d_backward(dout.data(), X.data(), W.data(),
+                                         dX.mutable_data(), dW.mutable_data(),
+                                         N, Cin, H, Wi, Cout, KH, KW, stride, pad);
+        return py::make_tuple(dX, dW);
     });
 
     // ── BatchNorm Forward ───────────────────────────────────
