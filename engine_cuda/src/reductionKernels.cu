@@ -151,31 +151,31 @@ void _cuda_reduce_arg_gputogpu(half *A, int *out, int ndims, int dim,
   cudaDeviceSynchronize();
 }
 
-void cuda_sum_gputogpu(half *A, half *out, int ndims, int dim, int *dimarr) {
+void cuda_sum_fwd(half *A, half *out, int ndims, int dim, int *dimarr) {
   _cuda_reduce_gputogpu(A, out, ndims, dim, dimarr, __float2half(1.0f),
                         Reductionsum);
 }
 
-void cuda_mean_gputogpu(half *A, half *out, int ndims, int dim, int *dimarr) {
+void cuda_mean_fwd(half *A, half *out, int ndims, int dim, int *dimarr) {
   _cuda_reduce_gputogpu(A, out, ndims, dim, dimarr,
                         __float2half((float)dimarr[dim]), Reductionsum);
 }
 
-void cuda_max_gputogpu(half *A, half *out, int ndims, int dim, int *dimarr) {
+void cuda_max_fwd(half *A, half *out, int ndims, int dim, int *dimarr) {
   _cuda_reduce_gputogpu(A, out, ndims, dim, dimarr, __float2half(0.0f),
                         Reductionmax);
 }
 
-void cuda_min_gputogpu(half *A, half *out, int ndims, int dim, int *dimarr) {
+void cuda_min_fwd(half *A, half *out, int ndims, int dim, int *dimarr) {
   _cuda_reduce_gputogpu(A, out, ndims, dim, dimarr, __float2half(0.0f),
                         Reductionmin);
 }
 
-void cuda_argmax_gputogpu(half *A, int *out, int ndims, int dim, int *dimarr) {
+void cuda_argmax_fwd(half *A, int *out, int ndims, int dim, int *dimarr) {
   _cuda_reduce_arg_gputogpu(A, out, ndims, dim, dimarr, Reductionargmax);
 }
 
-void cuda_argmin_gputogpu(half *A, int *out, int ndims, int dim, int *dimarr) {
+void cuda_argmin_fwd(half *A, int *out, int ndims, int dim, int *dimarr) {
   _cuda_reduce_arg_gputogpu(A, out, ndims, dim, dimarr, Reductionargmin);
 }
 
@@ -301,14 +301,14 @@ void _cuda_reduce_bwd_sparse_gputogpu(half *dOut, half *fwdInput,
 }
 
 // sum backward: dA[i] = dOut[reduced_idx] (broadcast, no scaling)
-void cuda_sum_bwd_gputogpu(half *dOut, half *dA, int ndims, int dim,
+void cuda_sum_bwd(half *dOut, half *dA, int ndims, int dim,
                            int *dimarr) {
   _cuda_reduce_bwd_gputogpu(dOut, dA, ndims, dim, dimarr, __float2half(1.0f),
                             Reductionsum_bwd);
 }
 
 // mean backward: dA[i] = dOut[reduced_idx] / dimarr[dim]
-void cuda_mean_bwd_gputogpu(half *dOut, half *dA, int ndims, int dim,
+void cuda_mean_bwd(half *dOut, half *dA, int ndims, int dim,
                             int *dimarr) {
   _cuda_reduce_bwd_gputogpu(dOut, dA, ndims, dim, dimarr,
                             __float2half((float)dimarr[dim]),
@@ -316,14 +316,14 @@ void cuda_mean_bwd_gputogpu(half *dOut, half *dA, int ndims, int dim,
 }
 
 // max backward: dA[argmax_pos] = dOut, rest = 0 (requires saved fwd input/output)
-void cuda_max_bwd_gputogpu(half *dOut, half *fwdInput, half *fwdOutput,
+void cuda_max_bwd(half *dOut, half *fwdInput, half *fwdOutput,
                            half *dA, int ndims, int dim, int *dimarr) {
   _cuda_reduce_bwd_sparse_gputogpu(dOut, fwdInput, fwdOutput, dA, ndims, dim,
                                    dimarr, Reductionmax_bwd);
 }
 
 // min backward: dA[argmin_pos] = dOut, rest = 0 (requires saved fwd input/output)
-void cuda_min_bwd_gputogpu(half *dOut, half *fwdInput, half *fwdOutput,
+void cuda_min_bwd(half *dOut, half *fwdInput, half *fwdOutput,
                            half *dA, int ndims, int dim, int *dimarr) {
   _cuda_reduce_bwd_sparse_gputogpu(dOut, fwdInput, fwdOutput, dA, ndims, dim,
                                    dimarr, Reductionmin_bwd);
