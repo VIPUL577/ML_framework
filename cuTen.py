@@ -3,7 +3,8 @@ import seera_cuda
 # cuten is a library, for all the GPU operations, just like numpy, infact any value it takes in is directly transferrd
 # to GPU, it supports all the operations as listed in seera_engine_cuda. but ONLY operates.
 # the tensor class will take in cuten tensors just like it took numpy tensors. 
-# so hence depending upon the type this will significatly ease the the architecture
+# so hence depending upon the type this will significatly ease the the architecture.
+# Fun
 class cuten:
     def __init__(self, data, dtype="float32"):
         if isinstance(data, np.ndarray):
@@ -18,6 +19,6 @@ class cuten:
             self.shape = arr.shape
             self.dtype = dtype
 
-        elif isinstance(data, ):
+        # elif isinstance(data, ):
         
         

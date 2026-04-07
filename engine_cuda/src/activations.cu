@@ -1,4 +1,4 @@
-#include "seera_engine_cuda.h"
+#include "seera_engine_cuda.hpp"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <math_constants.h>
@@ -8,7 +8,7 @@
 
 namespace seera_cuda
 {
-__global__ void cuda_relu_fwd(const half* x, half* out, half* grad, int size) {
+__global__ void _cuda_relu_fwd(const half* x, half* out, half* grad, int size) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < size; i += blockDim.x * gridDim.x) {
         float val = __half2float(x[i]);
         out[i]  = __float2half(val > 0.0f ? val : 0.0f);
@@ -16,7 +16,7 @@ __global__ void cuda_relu_fwd(const half* x, half* out, half* grad, int size) {
     }
 }
 
-__global__ void cuda_sigmoid_fwd(const half* x, half* out, half* grad, int size) {
+__global__ void _cuda_sigmoid_fwd(const half* x, half* out, half* grad, int size) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < size; i += blockDim.x * gridDim.x) {
         float val = __half2float(x[i]);
         float s = 1.0f / (1.0f + expf(-val));
@@ -25,7 +25,7 @@ __global__ void cuda_sigmoid_fwd(const half* x, half* out, half* grad, int size)
     }
 }
 
-__global__ void cuda_tanh_fwd(const half* x, half* out, half* grad, int size) {
+__global__ void _cuda_tanh_fwd(const half* x, half* out, half* grad, int size) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < size; i += blockDim.x * gridDim.x) {
         float val = __half2float(x[i]);
         float t = tanhf(val);
@@ -34,7 +34,7 @@ __global__ void cuda_tanh_fwd(const half* x, half* out, half* grad, int size) {
     }
 }
 
-__global__ void cuda_log_fwd(const half* x, half* out, half* grad, int size) {
+__global__ void _cuda_log_fwd(const half* x, half* out, half* grad, int size) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < size; i += blockDim.x * gridDim.x) {
         float val = __half2float(x[i]);
         out[i]  = __float2half(logf(val));
@@ -42,7 +42,7 @@ __global__ void cuda_log_fwd(const half* x, half* out, half* grad, int size) {
     }
 }
 
-__global__ void cuda_exp_fwd(const half* x, half* out, half* grad, int size) {
+__global__ void _cuda_exp_fwd(const half* x, half* out, half* grad, int size) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < size; i += blockDim.x * gridDim.x) {
         float val = __half2float(x[i]);
         float e = expf(val);
@@ -51,7 +51,7 @@ __global__ void cuda_exp_fwd(const half* x, half* out, half* grad, int size) {
     }
 }
 
-__global__ void cuda_abs_fwd(const half* x, half* out, half* grad, int size) {
+__global__ void _cuda_abs_fwd(const half* x, half* out, half* grad, int size) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < size; i += blockDim.x * gridDim.x) {
         float val = __half2float(x[i]);
         out[i]  = __float2half(fabsf(val));
@@ -59,7 +59,7 @@ __global__ void cuda_abs_fwd(const half* x, half* out, half* grad, int size) {
     }
 }
 
-__global__ void cuda_sqrt_fwd(const half* x, half* out, half* grad, int size) {
+__global__ void _cuda_sqrt_fwd(const half* x, half* out, half* grad, int size) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < size; i += blockDim.x * gridDim.x) {
         float val = __half2float(x[i]);
         float s = sqrtf(val);
@@ -68,7 +68,7 @@ __global__ void cuda_sqrt_fwd(const half* x, half* out, half* grad, int size) {
     }
 }
 
-__global__ void cuda_pow_fwd(const half* x, float exponent, half* out, half* grad, int size) {
+__global__ void _cuda_pow_fwd(const half* x, float exponent, half* out, half* grad, int size) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < size; i += blockDim.x * gridDim.x) {
         float val = __half2float(x[i]);
         out[i]  = __float2half(powf(val, exponent));
@@ -76,7 +76,7 @@ __global__ void cuda_pow_fwd(const half* x, float exponent, half* out, half* gra
     }
 }
 
-__global__ void cuda_clip_fwd(const half* x, float lo, float hi, half* out, half* grad, int size) {
+__global__ void _cuda_clip_fwd(const half* x, float lo, float hi, half* out, half* grad, int size) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < size; i += blockDim.x * gridDim.x) {
         float val = __half2float(x[i]);
         out[i]  = __float2half(fminf(fmaxf(val, lo), hi));
@@ -86,7 +86,7 @@ __global__ void cuda_clip_fwd(const half* x, float lo, float hi, half* out, half
 
 
 
-__global__ void cuda_softmax_fwd(const half* x, half* out, int N, int C) {
+__global__ void _cuda_softmax_fwd(const half* x, half* out, int N, int C) {
     extern __shared__ float smem[]; // Size: blockDim.x
     int row = blockIdx.x;
     if (row >= N) return;
@@ -128,7 +128,7 @@ __global__ void cuda_softmax_fwd(const half* x, half* out, int N, int C) {
     }
 }
 
-__global__ void cuda_softmax_vjp(const half* s, const half* dout, half* dx, int N, int C) {
+__global__ void _cuda_softmax_vjp(const half* s, const half* dout, half* dx, int N, int C) {
     extern __shared__ float smem[]; // Size: blockDim.x
     int row = blockIdx.x;
     if (row >= N) return;
@@ -163,49 +163,49 @@ inline int get_blocks(int size) {
     return (size + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
 }
 
-void cuda_relu_fwd(const half* x, half* out, half* grad, int size, cudaStream_t stream = 0) {
-    relu_fwd<<<get_blocks(size), THREADS_PER_BLOCK, 0, stream>>>(x, out, grad, size);
+void cuda_relu_fwd(const half* x, half* out, half* grad, int size) {
+    _cuda_relu_fwd<<<get_blocks(size), THREADS_PER_BLOCK>>>(x, out, grad, size);
 }
 
-void cuda_sigmoid_fwd(const half* x, half* out, half* grad, int size, cudaStream_t stream = 0) {
-    sigmoid_fwd<<<get_blocks(size), THREADS_PER_BLOCK, 0, stream>>>(x, out, grad, size);
+void cuda_sigmoid_fwd(const half* x, half* out, half* grad, int size) {
+    _cuda_sigmoid_fwd<<<get_blocks(size), THREADS_PER_BLOCK>>>(x, out, grad, size);
 }
 
-void cuda_tanh_fwd(const half* x, half* out, half* grad, int size, cudaStream_t stream = 0) {
-    tanh_fwd<<<get_blocks(size), THREADS_PER_BLOCK, 0, stream>>>(x, out, grad, size);
+void cuda_tanh_fwd(const half* x, half* out, half* grad, int size) {
+    _cuda_tanh_fwd<<<get_blocks(size), THREADS_PER_BLOCK>>>(x, out, grad, size);
 }
 
-void cuda_log_fwd(const half* x, half* out, half* grad, int size, cudaStream_t stream = 0) {
-    log_fwd<<<get_blocks(size), THREADS_PER_BLOCK, 0, stream>>>(x, out, grad, size);
+void cuda_log_fwd(const half* x, half* out, half* grad, int size) {
+    _cuda_log_fwd<<<get_blocks(size), THREADS_PER_BLOCK>>>(x, out, grad, size);
 }
 
-void cuda_exp_fwd(const half* x, half* out, half* grad, int size, cudaStream_t stream = 0) {
-    exp_fwd<<<get_blocks(size), THREADS_PER_BLOCK, 0, stream>>>(x, out, grad, size);
+void cuda_exp_fwd(const half* x, half* out, half* grad, int size) {
+    _cuda_exp_fwd<<<get_blocks(size), THREADS_PER_BLOCK>>>(x, out, grad, size);
 }
 
-void cuda_abs_fwd(const half* x, half* out, half* grad, int size, cudaStream_t stream = 0) {
-    abs_fwd<<<get_blocks(size), THREADS_PER_BLOCK, 0, stream>>>(x, out, grad, size);
+void cuda_abs_fwd(const half* x, half* out, half* grad, int size) {
+    _cuda_abs_fwd<<<get_blocks(size), THREADS_PER_BLOCK>>>(x, out, grad, size);
 }
 
-void cuda_sqrt_fwd(const half* x, half* out, half* grad, int size, cudaStream_t stream = 0) {
-    sqrt_fwd<<<get_blocks(size), THREADS_PER_BLOCK, 0, stream>>>(x, out, grad, size);
+void cuda_sqrt_fwd(const half* x, half* out, half* grad, int size) {
+    _cuda_sqrt_fwd<<<get_blocks(size), THREADS_PER_BLOCK>>>(x, out, grad, size);
 }
 
-void cuda_pow_fwd(const half* x, float exponent, half* out, half* grad, int size, cudaStream_t stream = 0) {
-    pow_fwd<<<get_blocks(size), THREADS_PER_BLOCK, 0, stream>>>(x, exponent, out, grad, size);
+void cuda_pow_fwd(const half* x, float exponent, half* out, half* grad, int size) {
+    _cuda_pow_fwd<<<get_blocks(size), THREADS_PER_BLOCK>>>(x, exponent, out, grad, size);
 }
 
-void cuda_clip_fwd(const half* x, float lo, float hi, half* out, half* grad, int size, cudaStream_t stream = 0) {
-    clip_fwd<<<get_blocks(size), THREADS_PER_BLOCK, 0, stream>>>(x, lo, hi, out, grad, size);
+void cuda_clip_fwd(const half* x, float lo, float hi, half* out, half* grad, int size) {
+    _cuda_clip_fwd<<<get_blocks(size), THREADS_PER_BLOCK>>>(x, lo, hi, out, grad, size);
 }
 
 
-void cuda_softmax_fwd(const half* x, half* out, int N, int C, cudaStream_t stream = 0) {
+void cuda_softmax_fwd(const half* x, half* out, int N, int C) {
     int shared_mem_bytes = THREADS_PER_BLOCK * sizeof(float);
-    softmax_fwd<<<N, THREADS_PER_BLOCK, shared_mem_bytes, stream>>>(x, out, N, C);
+    _cuda_softmax_fwd<<<N, THREADS_PER_BLOCK, shared_mem_bytes>>>(x, out, N, C);
 }
 
-void cuda_softmax_vjp(const half* s, const half* dout, half* dx, int N, int C, cudaStream_t stream = 0) {
+void cuda_softmax_vjp(const half* s, const half* dout, half* dx, int N, int C) {
     int shared_mem_bytes = THREADS_PER_BLOCK * sizeof(float);
-    softmax_vjp<<<N, THREADS_PER_BLOCK, shared_mem_bytes, stream>>>(s, dout, dx, N, C);
+    _cuda_softmax_vjp<<<N, THREADS_PER_BLOCK, shared_mem_bytes>>>(s, dout, dx, N, C);
 }}

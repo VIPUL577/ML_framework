@@ -4,15 +4,17 @@
 #include <mma.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "seera_engine_cuda.hpp"
+
 #include <time.h>
 namespace seera_cuda {
 using namespace nvcuda;
 
-__global__ void float2halff(float *A, half *B) {
+__host__ __device__ inline  void float2halff(float *A, half *B) {
   int globalid = blockIdx.x * blockDim.x + threadIdx.x;
   B[globalid] = __float2half(A[globalid]);
 }
-__global__ void half2float(half *A, float *B) {
+__host__ __device__ inline void half2float(half *A, float *B) {
   int globalid = blockIdx.x * blockDim.x + threadIdx.x;
   B[globalid] = __half2float(A[globalid]);
 }

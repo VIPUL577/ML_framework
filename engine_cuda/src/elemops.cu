@@ -3,6 +3,8 @@
 #include <math.h>
 #include <stdio.h>
 #include <time.h>
+#include "seera_engine_cuda.hpp"
+
 
 #include <stdlib.h>
 namespace seera_cuda {

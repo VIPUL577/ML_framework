@@ -8,12 +8,12 @@
 #include <cuda_fp16.h>
 namespace seera_cuda
 {
-    __global__ void float2halff(float *A, half *B)
+    __host__ __device__ inline void float2halff(float *A, half *B)
     {
         int globalid = blockIdx.x * blockDim.x + threadIdx.x;
         B[globalid] = __float2half(A[globalid]);
     }
-    __global__ void half2float(half *A, float *B)
+    __host__ __device__ inline void half2float(half *A, float *B)
     {
         int globalid = blockIdx.x * blockDim.x + threadIdx.x;
         B[globalid] = __half2float(A[globalid]);
@@ -103,10 +103,10 @@ namespace seera_cuda
     }
 
     void cuda_maxpool_fwd(half *image, half *out, short *mask,
-                               int batchN, int C, int H, int W,
-                               int R, int S,
-                               int pad_h, int pad_w,
-                               int stride_h, int stride_w)
+                          int batchN, int C, int H, int W,
+                          int R, int S,
+                          int pad_h, int pad_w,
+                          int stride_h, int stride_w)
     {
         int H_out = (H + 2 * pad_h - R) / stride_h + 1;
         int W_out = (W + 2 * pad_w - S) / stride_w + 1;

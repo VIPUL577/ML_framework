@@ -6,27 +6,27 @@
 
 namespace seera_cuda
 {
-    void cuda_relu_fwd(const half *x, half *out, half *grad, int size, cudaStream_t stream = 0);
+    void cuda_relu_fwd(const half *x, half *out, half *grad, int size);
 
-    void cuda_sigmoid_fwd(const half *x, half *out, half *grad, int size, cudaStream_t stream = 0);
+    void cuda_sigmoid_fwd(const half *x, half *out, half *grad, int size);
 
-    void cuda_tanh_fwd(const half *x, half *out, half *grad, int size, cudaStream_t stream = 0);
+    void cuda_tanh_fwd(const half *x, half *out, half *grad, int size);
 
-    void cuda_log_fwd(const half *x, half *out, half *grad, int size, cudaStream_t stream = 0);
+    void cuda_log_fwd(const half *x, half *out, half *grad, int size);
 
-    void cuda_exp_fwd(const half *x, half *out, half *grad, int size, cudaStream_t stream = 0);
+    void cuda_exp_fwd(const half *x, half *out, half *grad, int size);
 
-    void cuda_abs_fwd(const half *x, half *out, half *grad, int size, cudaStream_t stream = 0);
+    void cuda_abs_fwd(const half *x, half *out, half *grad, int size);
 
-    void cuda_sqrt_fwd(const half *x, half *out, half *grad, int size, cudaStream_t stream = 0);
+    void cuda_sqrt_fwd(const half *x, half *out, half *grad, int size);
 
-    void cuda_pow_fwd(const half *x, float exponent, half *out, half *grad, int size, cudaStream_t stream = 0);
+    void cuda_pow_fwd(const half *x, float exponent, half *out, half *grad, int size);
 
-    void cuda_clip_fwd(const half *x, float lo, float hi, half *out, half *grad, int size, cudaStream_t stream = 0);
+    void cuda_clip_fwd(const half *x, float lo, float hi, half *out, half *grad, int size);
 
-    void cuda_softmax_fwd(const half *x, half *out, int N, int C, cudaStream_t stream = 0);
+    void cuda_softmax_fwd(const half *x, half *out, int N, int C);
 
-    void cuda_softmax_vjp(const half *s, const half *dout, half *dx, int N, int C, cudaStream_t stream = 0);
+    void cuda_softmax_vjp(const half *s, const half *dout, half *dx, int N, int C);
 
     void cuda_conv2d_bwd(half *W, half *X, half *dY, half *dX, half *dW,
                          int batch, int C, int H, int W_in, int N, int R,

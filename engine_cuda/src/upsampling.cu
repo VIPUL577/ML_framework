@@ -2,6 +2,7 @@
 #include <cuda_fp16.h>
 #include <math.h>
 #include <mma.h>
+#include "seera_engine_cuda.hpp"
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>

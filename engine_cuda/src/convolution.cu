@@ -11,12 +11,12 @@ namespace seera_cuda
 {
     using namespace nvcuda;
 
-    __global__ void float2halff(float *A, half *B)
+    __host__ __device__ inline void float2halff(float *A, half *B)
     {
         int globalid = blockIdx.x * blockDim.x + threadIdx.x;
         B[globalid] = __float2half(A[globalid]);
     }
-    __global__ void half2float(half *A, float *B)
+    __host__ __device__ inline  void half2float(half *A, float *B)
     {
         int globalid = blockIdx.x * blockDim.x + threadIdx.x;
         B[globalid] = __half2float(A[globalid]);
@@ -128,27 +128,24 @@ namespace seera_cuda
         }
     }
 
-} // namespace seera_cuda
+    // namespace seera_cuda
 
-// ============================================================================
-// BACKWARD PASS for Conv2d
-// ============================================================================
-// Forward: Y[b,n,h_out,w_out] = sum_{c,r,s} W[n,c,r,s] *
-// X[b,c,h_out*s_h-p_h+r,h_out*s_w-p_w+s]
-//
-// dX = ConvTranspose2d(dY, W)
-//   dY: [batch, N, H_out, W_out],  W: [N, C, R, S]
-//   dX: [batch, C, H, W]
-//   ConvTranspose with Cin=N, Cout=C, Hin=H_out, Win=W_out
-//
-// dW[n,c,r,s] = sum_{b,h_out,w_out} dY[b,n,h_out,w_out] *
-// X[b,c,h_out*s-p+r,w_out*s-p+s]
-//   Per-batch: dW_b[N, C*R*S] = dY_b[N, H_out*W_out] @ im2col(X_b)[C*R*S,
-//   H_out*W_out]^T Then reduce: dW = sum_b dW_b
-// ============================================================================
-
-namespace seera_cuda
-{
+    // ============================================================================
+    // BACKWARD PASS for Conv2d
+    // ============================================================================
+    // Forward: Y[b,n,h_out,w_out] = sum_{c,r,s} W[n,c,r,s] *
+    // X[b,c,h_out*s_h-p_h+r,h_out*s_w-p_w+s]
+    //
+    // dX = ConvTranspose2d(dY, W)
+    //   dY: [batch, N, H_out, W_out],  W: [N, C, R, S]
+    //   dX: [batch, C, H, W]
+    //   ConvTranspose with Cin=N, Cout=C, Hin=H_out, Win=W_out
+    //
+    // dW[n,c,r,s] = sum_{b,h_out,w_out} dY[b,n,h_out,w_out] *
+    // X[b,c,h_out*s-p+r,w_out*s-p+s]
+    //   Per-batch: dW_b[N, C*R*S] = dY_b[N, H_out*W_out] @ im2col(X_b)[C*R*S,
+    //   H_out*W_out]^T Then reduce: dW = sum_b dW_b
+    // ============================================================================
 
     // --- dX kernels: ConvTranspose(dY, W) → dX ---
     // Reusing the same WMMA conv-transpose matmul pattern from upsampling.cu
@@ -389,9 +386,9 @@ namespace seera_cuda
         }
     }
     void cuda_conv2d_fwd(half *h_image, half *h_kernel, half *d_conv,
-                                   int batchN, int C, int H, int W, int N, int R,
-                                   int S, int pad_h, int pad_w, int stride_h,
-                                   int stride_w)
+                         int batchN, int C, int H, int W, int N, int R,
+                         int S, int pad_h, int pad_w, int stride_h,
+                         int stride_w)
     {
         int H_out = (H + 2 * pad_h - R) / stride_h + 1;
         int W_out = (W + 2 * pad_w - S) / stride_w + 1;
@@ -421,8 +418,8 @@ namespace seera_cuda
     // X: [batch, C, H, W], W: [N, C, R, S], dY: [batch, N, H_out, W_out]
     // Output: dX [batch, C, H, W], dW [N, C, R, S]
     void cuda_conv2d_bwd(half *W, half *X, half *dY, half *dX, half *dW,
-                              int batch, int C, int H, int W_in, int N, int R,
-                              int S, int strideh, int stridew, int padh, int padw)
+                         int batch, int C, int H, int W_in, int N, int R,
+                         int S, int strideh, int stridew, int padh, int padw)
     {
         int H_out = (H + 2 * padh - R) / strideh + 1;
         int W_out = (W_in + 2 * padw - S) / stridew + 1;
