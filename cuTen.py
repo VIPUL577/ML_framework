@@ -71,7 +71,7 @@ class cuten:
             return self 
     
     def __mul__(self, other):
-        
+    
         if isinstance(other,cuten):
             if self.shape != other.shape:
                 raise ValueError(f"Should be of same shape for Elements Multiplication Add one is of {self.shape} and {other.shape}")
@@ -84,6 +84,23 @@ class cuten:
             seera_cuda.cuda_scaler_multiply_f(self.main_ptr, float(other),self.size )
         
             return self 
+        
+        raise ValueError("Not Supported, Can be Device Mismatch")
+        
+        
+    def __pow__(self, other):
+        if isinstance(other,int) or isinstance(other,float):
+            seera_cuda.cuda_power_of(self.main_ptr, float(other),self.size )
+        
+            return self 
+    
+    def __neg__(self):    return self * (-1)
+    def __sub__(self, other): return self + (-other)
+    def __radd__(self, other): return self + other
+    def __rsub__(self, other): return other + (self * -1)
+    def __rmul__(self, other): return self * other
+    def __truediv__(self, other): return self * other ** -1
+    def __rtruediv__(self, other): return other * self ** -1
     
     def __repr__(self):
         np_local = seera_cuda.to_host_f32(self.main_ptr,self.shape)

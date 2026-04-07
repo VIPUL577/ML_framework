@@ -46,9 +46,19 @@ namespace seera_cuda
         int index = blockDim.x * blockIdx.x + threadIdx.x;
         if (index < total_elements)
         {
-            arr[index] *= (float)(k);
+            arr[index] *= k;
         }
     }
+
+    __global__ void _cuda_scaler_power_f(float *arr, float k, int total_elements)
+    {
+        int index = blockDim.x * blockIdx.x + threadIdx.x;
+        if (index < total_elements)
+        {
+            arr[index] = pow(arr[index], k);
+        }
+    }
+
     __global__ void _cuda_ones_f(float *arr, int total_elements)
     {
         int index = blockDim.x * blockIdx.x + threadIdx.x;
@@ -126,4 +136,14 @@ namespace seera_cuda
         _cuda_zeros_f<<<blocks, tpb>>>(arr, total_elements);
         cudaDeviceSynchronize();
     }
+
+    void cuda_scaler_power_f(float *arr, float k, int total_elements)
+    {
+        int tpb = 512;
+        int blocks = (total_elements + tpb - 1) / tpb;
+
+        _cuda_scaler_power_f<<<blocks, tpb>>>(arr, k, total_elements);
+        cudaDeviceSynchronize();
+    }
+    
 }

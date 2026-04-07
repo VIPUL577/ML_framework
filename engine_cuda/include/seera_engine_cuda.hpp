@@ -96,6 +96,8 @@ namespace seera_cuda
     // float
     void cuda_scaler_multiply_f(float *arr, float k, int total_elements);
     void cuda_scaler_add_f(float *arr, float k, int total_elements);
+    void cuda_scaler_power_f(float *arr, float k, int total_elements);
+
 
     void cuda_ones_f(float *arr, int total_elements);
     void cuda_zeros_f(float *arr, int total_elements);
