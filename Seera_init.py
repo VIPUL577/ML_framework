@@ -1,4 +1,5 @@
 import numpy as np
+from cuTen import cuten
 
 # ── Try importing C++ engine (falls back to NumPy if unavailable) ──
 try:

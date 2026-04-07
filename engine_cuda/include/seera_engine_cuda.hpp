@@ -118,6 +118,6 @@ conv transpose fwd bwd -done
 maxpool mask -done
 activation functions-done
 returns gradient with elemops and activations-done
-concatenate
+concatenate-done
 batchnorm fwd, bwd
 */

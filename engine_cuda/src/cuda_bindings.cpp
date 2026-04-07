@@ -58,6 +58,9 @@ PYBIND11_MODULE(seera_cuda, m)
       m.def("cuda_free", [](uintptr_t ptr)
             { cudaFree(reinterpret_cast<void *>(ptr)); }, "Free GPU memory");
 
+      m.def("cuda_memcopy_devicetodevice", [](uintptr_t ptr1,uintptr_t ptr2, int num_elem)
+            { cudaMemcpy(reinterpret_cast<void *>(ptr1),reinterpret_cast<void *>(ptr2), num_elem*sizeof(float), cudaMemcpyDeviceToDevice); }, "for concatenate");
+
       // cuda_memset: zero-fill GPU memory
       m.def("cuda_memset", [](uintptr_t ptr, int value, size_t n_bytes)
             { cudaMemset(reinterpret_cast<void *>(ptr), value, n_bytes); }, "Memset GPU memory");
