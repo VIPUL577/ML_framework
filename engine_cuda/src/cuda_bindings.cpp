@@ -462,19 +462,21 @@ PYBIND11_MODULE(seera_cuda, m)
       m.def("cuda_scaler_add_f", [](uintptr_t arr, float k, int total_elements)
             { seera_cuda::cuda_scaler_add_f(
                   reinterpret_cast<float *>(arr), k, total_elements); }, "Scalar multiply float (GPU ptr)");
-      m.def("cuda_ones_f", [](uintptr_t arr, int total_elements)
+      m.def("cuda_ones_f", [](int total_elements)
             {     float* ones; 
                   cudaMalloc(&ones, total_elements*sizeof(float));
-                  seera_cuda::cuda_ones_f(ones, total_elements); }, "Fill ones float (GPU ptr)");
+                  seera_cuda::cuda_ones_f(ones, total_elements); 
+                  return reinterpret_cast<uintptr_t>(ones);}, "Fill ones float (GPU ptr)");
 
       m.def("cuda_zeros_f", [](int total_elements)
             {     float* zeros; 
                   cudaMalloc(&zeros, total_elements*sizeof(float));
-                  seera_cuda::cuda_zeros_f(zeros, total_elements); }, "Fill zeros float (GPU ptr)");
+                  seera_cuda::cuda_zeros_f(zeros, total_elements); 
+                  return reinterpret_cast<uintptr_t>(zeros); }, "Fill zeros float (GPU ptr)");
 
-      m.def("cuda_power_of", [](uintptr_t arr, float k , int total_elements)
+      m.def("cuda_power_of", [](uintptr_t arr, float k, int total_elements)
             { seera_cuda::cuda_scaler_power_f(
-                  reinterpret_cast<float *>(arr), k ,total_elements); }, "Fill zeros float (GPU ptr)");
+                  reinterpret_cast<float *>(arr), k, total_elements); }, "Fill zeros float (GPU ptr)");
 
       // ══════════════════════════════════════════════════════════════════
       // Elemops

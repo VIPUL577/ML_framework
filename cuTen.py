@@ -9,7 +9,6 @@ import seera_cuda
 class cuten:
     def __init__(self, data, dtype="float32"):
         self.supported_types = ["float32","int32","int16"]
-
         self.fill_alloc_dtype = {
             "float32":seera_cuda.to_device_f32,
             "int32":seera_cuda.to_device_i32,
@@ -29,6 +28,14 @@ class cuten:
             # Convert to numpy first, then to GPU
             arr = np.array(data, dtype=dtype)
             self._allocate_convert_to_gpu(arr,arr.shape,arr.size,dtype)
+            
+        else:
+            self.main_ptr = None; 
+            self.shape = None
+            self.size = None
+            self.dtype = dtype
+                
+            
 
     def _allocate_convert_to_gpu(self,data:np.ndarray, shape, size, dtype):
         print(f"the dtype is {dtype}")
@@ -56,6 +63,35 @@ class cuten:
     def zeros_like_fromnumpy(cls, arr:np.ndarray):
         return cuten(arr,dtype=str(arr.dtype))
 
+    @classmethod
+    def zeros(cls, shape):
+        shape = tuple(shape)
+        size = 1 ; 
+        for dim in shape:
+            size *= dim
+        main_ptr = seera_cuda.cuda_zeros_f(size)
+        
+        sel = cuten(data=None,dtype="float32") 
+        sel.main_ptr = main_ptr
+        sel.shape = shape
+        sel.size = size
+        return sel
+     
+    @classmethod
+    def ones(cls, shape):
+        shape = tuple(shape)
+        size = 1 ; 
+        for dim in shape:
+            size *= dim
+        main_ptr = seera_cuda.cuda_ones_f(size)
+        
+        sel = cuten(data=None,dtype="float32") 
+
+        sel.main_ptr = main_ptr
+        sel.shape = shape
+        sel.size = size
+        
+        return sel        
 
     def __add__(self, other):
         if isinstance(other,cuten):
@@ -101,7 +137,15 @@ class cuten:
     def __rmul__(self, other): return self * other
     def __truediv__(self, other): return self * other ** -1
     def __rtruediv__(self, other): return other * self ** -1
-    
+    def reshape(self,shape:tuple):
+        size = 1 ; 
+        for dim in shape:
+            size *= dim
+        if self.size != size:
+            raise ValueError(f"Cannot reshape cuten of size: {self.size} to shape {shape}")
+        
+        self.shape = shape
+        
     def __repr__(self):
         np_local = seera_cuda.to_host_f32(self.main_ptr,self.shape)
         print(np_local)
