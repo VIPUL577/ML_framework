@@ -10,18 +10,31 @@ except ImportError:
     import warnings
     warnings.warn("C++ engine not found. Using NumPy fallback. Run: python build_engine.py")
 
+
+def _where(value):
+    if isinstance(value, cuten):
+        return cuten
+    return np
+
+
 # ─────────────────────────────────────────────────────────────
 # Node: gradient info and children in the computation graph
 # ─────────────────────────────────────────────────────────────
 class node:
-    def __init__(self, child_grad, out=0, node_no=0):
+    def __init__(self, child_grad, out=0,dtype="float32",device = "cpu"):
         self.out = out
-        self.child_grad = np.array(child_grad, dtype=object)
+        self.child_grad = np.array(child_grad, dtype=dtype)
+            
         if isinstance(child_grad, list) and len(child_grad) > 0 and len(child_grad[0]) > 0:
             self.cp = np.zeros_like(child_grad[0][0])
         else:
             self.cp = 0
         self.child = []
+        
+        if device == "cuda":
+            self.value = cuten(data=self.child_grad,dtype=dtype)
+            self.cp = cuten(np.zeros_like(child_grad[0][0]))
+            
 
     @property
     def grad(self):
@@ -33,13 +46,15 @@ class node:
 # Batch dim is axis 0:  Dense(N, features)  Conv(N, C, H, W)
 # ─────────────────────────────────────────────────────────────
 class tensor(node):
-    def __init__(self, value, dtype="float32", is_leaf=False):
+    def __init__(self, value, dtype="float32", is_leaf=False, device = "cpu"):
         self.value = np.ascontiguousarray(np.array(value).astype(dtype))
+        if device == "cuda":
+            self.value = cuten(data=self.value,dtype=dtype)
         child_grad = (
             [np.zeros_like(self.value), np.zeros_like(self.value)],
             [np.zeros_like(self.value), np.zeros_like(self.value)],
         )
-        self.node = node(child_grad)
+        self.node = node(child_grad,device=device)
         self.is_leaf = is_leaf
         self.dtype = dtype
 

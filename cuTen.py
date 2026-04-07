@@ -16,7 +16,7 @@ class cuten:
             
         }
         if dtype not in self.supported_types :
-            raise ValueError("Not Supported by cuTen, try in CPU")
+            raise ValueError("[cuTen]:Not Supported by cuTen, try in CPU")
 
         if isinstance(data, np.ndarray):
             # Transfer numpy array to GPU immediately
@@ -102,7 +102,7 @@ class cuten:
     def __add__(self, other):
         if isinstance(other,cuten):
             if self.shape != other.shape:
-                raise ValueError(f"Should be of same shape for Elements Add one is of {self.shape} and {other.shape}")
+                raise ValueError(f"[cuTen]: Should be of same shape for Elements Add one is of {self.shape} and {other.shape}")
             c= cuten.ones_like(self)
             seera_cuda.cuda_elemadd(self.main_ptr,other.main_ptr, c.main_ptr, self.size)
             return c
@@ -116,7 +116,7 @@ class cuten:
     
         if isinstance(other,cuten):
             if self.shape != other.shape:
-                raise ValueError(f"Should be of same shape for Elements Multiplication Add one is of {self.shape} and {other.shape}")
+                raise ValueError(f"[cuTen]: Should be of same shape for Elements Multiplication Add one is of {self.shape} and {other.shape}")
 
             c= cuten.ones_like(self)
             seera_cuda.cuda_elemmult(self.main_ptr,other.main_ptr, c.main_ptr, self.size)
@@ -127,7 +127,7 @@ class cuten:
         
             return self 
         
-        raise ValueError("Not Supported, Can be Device Mismatch")
+        raise ValueError("[cuTen]: Not Supported, Can be Device Mismatch")
         
         
     def __pow__(self, other):
@@ -149,7 +149,7 @@ class cuten:
         for dim in shape:
             size *= dim
         if self.size != size:
-            raise ValueError(f"Cannot reshape cuten of size: {self.size} to shape {shape}")
+            raise ValueError(f"[cuTen]: Cannot reshape cuten of size: {self.size} to shape {shape}")
         
         self.shape = shape
         
@@ -245,7 +245,7 @@ class cuten:
     def softmax(self) -> cuten:
         """Softmax over the last dimension. Input must be >= 2-D."""
         if len(self.shape) < 2:
-            raise ValueError("softmax requires at least a 2-D tensor")
+            raise ValueError("[cuTen]: softmax requires at least a 2-D tensor")
         N = 1
         for d in self.shape[:-1]:
             N *= d
@@ -272,14 +272,14 @@ class cuten:
         Uses cuda_matmul(A, B, C, M, N, K, Nbatch).
         """
         if len(self.shape) < 2 or len(other.shape) < 2:
-            raise ValueError("matmul requires at least 2-D tensors")
+            raise ValueError("[cuTen]: matmul requires at least 2-D tensors")
 
         M = self.shape[-2]
         K = self.shape[-1]
         N = other.shape[-1]
         if other.shape[-2] != K:
             raise ValueError(
-                f"matmul: inner dimensions must agree, got {self.shape} @ {other.shape}")
+                f"[cuTen]: matmul: inner dimensions must agree, got {self.shape} @ {other.shape}")
 
         # batch count
         self_batch = self.shape[:-2]
@@ -287,7 +287,7 @@ class cuten:
 
         if self_batch and other_batch and self_batch != other_batch:
             raise ValueError(
-                f"matmul: batch dims must match, got {self_batch} vs {other_batch}")
+                f"[cuTen]: matmul: batch dims must match, got {self_batch} vs {other_batch}")
         batch_shape = self_batch if self_batch else other_batch
         Nbatch = 1
         for d in batch_shape:
@@ -321,7 +321,7 @@ class cuten:
         if dim < 0:
             dim = ndims + dim
         if dim < 0 or dim >= ndims:
-            raise ValueError(f"dim {dim} out of range for shape {self.shape}")
+            raise ValueError(f"[cuTen]: dim {dim} out of range for shape {self.shape}")
 
         out_shape = tuple(d for i, d in enumerate(self.shape) if i != dim)
         if not out_shape:
@@ -398,7 +398,7 @@ class cuten:
                padh: int = 0, padw: int = 0) -> cuten:
         """Forward conv2d. self is image (N,C,H,W), kernel is (F,C,KH,KW)."""
         if len(self.shape) != 4 or len(kernel.shape) != 4:
-            raise ValueError("conv2d expects 4-D tensors (N,C,H,W) and (F,C,KH,KW)")
+            raise ValueError("[cuTen]: conv2d expects 4-D tensors (N,C,H,W) and (F,C,KH,KW)")
 
         batchN, C, H, W = self.shape
         F, _Ck, KH, KW = kernel.shape
@@ -429,7 +429,7 @@ class cuten:
                   padh: int = 0, padw: int = 0):
         """Forward max-pool. Returns (output, mask) where mask is int16 cuten."""
         if len(self.shape) != 4:
-            raise ValueError("maxpool2d expects 4-D tensor (N,C,H,W)")
+            raise ValueError("[cuTen]: maxpool2d expects 4-D tensor (N,C,H,W)")
 
         batchN, C, H, W = self.shape
         OH = (H + 2 * padh - KH) // strideh + 1
@@ -463,7 +463,7 @@ class cuten:
     def unpool(self, sh: int, sw: int) -> cuten:
         """Nearest-neighbour upsample by factors (sh, sw)."""
         if len(self.shape) != 4:
-            raise ValueError("unpool expects 4-D tensor (N,C,H,W)")
+            raise ValueError("[cuTen]:unpool expects 4-D tensor (N,C,H,W)")
 
         batchN, C, H, W = self.shape
         out_shape = (batchN, C, H * sh, W * sw)
@@ -490,7 +490,7 @@ class cuten:
         """Forward transposed convolution."""
         if len(self.shape) != 4 or len(kernel.shape) != 4:
             raise ValueError(
-                "conv2d_transpose expects 4-D tensors (N,Cin,H,W) and (Cin,Cout,KH,KW)")
+                "[cuTen]: conv2d_transpose expects 4-D tensors (N,Cin,H,W) and (Cin,Cout,KH,KW)")
 
         batchN, Cin, H, W = self.shape
         _Cin2, Cout, KH, KW = kernel.shape
@@ -529,11 +529,19 @@ class cuten:
 
         return ptr3 
     
+    @staticmethod
+    def _concatenate_backward(ptr_out, ptr1, ptr2, n1, n2):
+        # dout → dx1
+        seera_cuda.cuda_memcopy_devicetodevice(ptr1, ptr_out, n1)
+        
+        # dout → dx2 (offset by n1)
+        seera_cuda.cuda_memcopy_devicetodevice(ptr2, ptr_out + n1 * 4, n2)
+    
     def concatenate2D(self,other):
         if(self.shape[0]!=other.shape[0]):
-            raise ValueError(f"No of Batches should be same, received {self.shape[0]} and {other.shape[0]}")
+            raise ValueError(f"[cuTen]: No of Batches should be same, received {self.shape[0]} and {other.shape[0]}")
         if(self.shape[3]!=other.shape[3] or self.shape[2]!=other.shape[2]):
-            raise ValueError(f"H x W should be same, received ({self.shape[2]},{self.shape[3]}) and ({other.shape[2]},{other.shape[3]})")
+            raise ValueError(f"[cuTen]: H x W should be same, received ({self.shape[2]},{self.shape[3]}) and ({other.shape[2]},{other.shape[3]})")
         N = self.shape[0]
         n1 = int(self.size/N)
         n2 = int(other.size/N)
@@ -553,9 +561,42 @@ class cuten:
         
         return reten
     
+    @classmethod
+    def concatenate2D_backward(cls, dout, self, other):
+        if dout.shape[0] != self.shape[0]:
+            raise ValueError("[cuTen]: Batch mismatch in backward")
+
+        N = self.shape[0]
+        n1 = int(self.size / N)
+        n2 = int(other.size / N)
+
+        # allocate gradients
+        dx1_ptr = seera_cuda.cuda_malloc_f32(self.size)
+        dx2_ptr = seera_cuda.cuda_malloc_f32(other.size)
+
+        for i in range(N):
+            ptr_out = dout.main_ptr + ((n1 + n2) * i * 4)
+            ptr1 = dx1_ptr + (n1 * i * 4)
+            ptr2 = dx2_ptr + (n2 * i * 4)
+
+            cls._concatenate_backward(ptr_out, ptr1, ptr2, n1, n2)
+
+        dx1 = cuten(data=None)
+        dx1.main_ptr = dx1_ptr
+        dx1.size = self.size
+        dx1.shape = self.shape
+
+        dx2 = cuten(data=None)
+        dx2.main_ptr = dx2_ptr
+        dx2.size = other.size
+        dx2.shape = other.shape
+
+        return dx1, dx2
+    
+        
     def concatenate1D(self,other):
         if(self.shape[0]!=other.shape[0]):
-            raise ValueError(f"No of Batches should be same, received {self.shape[0]} and {other.shape[0]}")
+            raise ValueError(f"[cuTen]: No of Batches should be same, received {self.shape[0]} and {other.shape[0]}")
         
         N = self.shape[0]
         n1 = self.shape[1]
@@ -575,6 +616,37 @@ class cuten:
         reten.shape = (self.shape[0], self.shape[1]+other.shape[1])
         
         return reten
+    
+    @classmethod
+    def concatenate1D_backward(cls, dout, self, other):
+        if dout.shape[0] != self.shape[0]:
+            raise ValueError("[cuTen]: Batch mismatch in backward")
+
+        N = self.shape[0]
+        n1 = self.shape[1]
+        n2 = other.shape[1]
+
+        dx1_ptr = seera_cuda.cuda_malloc_f32(self.size)
+        dx2_ptr = seera_cuda.cuda_malloc_f32(other.size)
+
+        for i in range(N):
+            ptr_out = dout.main_ptr + ((n1 + n2) * i * 4)
+            ptr1 = dx1_ptr + (n1 * i * 4)
+            ptr2 = dx2_ptr + (n2 * i * 4)
+
+            cls._concatenate_backward(ptr_out, ptr1, ptr2, n1, n2)
+
+        dx1 = cuten(data=None)
+        dx1.main_ptr = dx1_ptr
+        dx1.size = self.size
+        dx1.shape = self.shape
+
+        dx2 = cuten(data=None)
+        dx2.main_ptr = dx2_ptr
+        dx2.size = other.size
+        dx2.shape = other.shape
+
+        return dx1, dx2 
     
     # ==================================================================
     # 20) Flatten input should be batched
