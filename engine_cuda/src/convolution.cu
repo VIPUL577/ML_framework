@@ -1,5 +1,6 @@
 
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <iomanip>
 #include <iostream>
@@ -11,21 +12,11 @@ namespace seera_cuda
 {
     using namespace nvcuda;
 
-    __host__ __device__ inline void float2halff(float *A, half *B)
-    {
-        int globalid = blockIdx.x * blockDim.x + threadIdx.x;
-        B[globalid] = __float2half(A[globalid]);
-    }
-    __host__ __device__ inline  void half2float(half *A, float *B)
-    {
-        int globalid = blockIdx.x * blockDim.x + threadIdx.x;
-        B[globalid] = __half2float(A[globalid]);
-    }
-
-    __global__ void convulution_eff(const half *input_image, half *conv,
-                                    half *kernel, int N, int C, int H, int W, int R,
-                                    int S, int pad_h, int pad_w, int stride_h,
-                                    int stride_w, int H_out, int W_out)
+    __global__ void convulution_eff(const float *input_image, float *conv,
+                                    float *kernel, int N, int C, int H, int W,
+                                    int R, int S, int pad_h, int pad_w,
+                                    int stride_h, int stride_w, int H_out,
+                                    int W_out)
     {
         __shared__ half iw2col[16 * 16];
         __shared__ half krl[16 * 16];
@@ -66,22 +57,22 @@ namespace seera_cuda
                 {
                     int kernel_idx = (ni) * (C * S * R) +
                                      global_kernel_; // isiliye since kernel ka row is used
-                    krl[tid] = kernel[kernel_idx];
+                    krl[tid] = __float2half(kernel[kernel_idx]);
                 }
                 else
                 {
-                    krl[tid] = 0;
+                    krl[tid] = __float2half(0.0f);
                 }
                 if (h_in >= 0 && h_in < H && w_in >= 0 && w_in < W && ky_ic < C)
                 {
                     int input_idx = ((batchno * C + ky_ic) * H + h_in) * W + w_in;
-                    iw2col[tid] =
-                        input_image[input_idx]; //- half(1); // and subsequntly im2col
-                                                // matrix ka column use ho raha hai.
+                    iw2col[tid] = __float2half(
+                        input_image[input_idx]); //- half(1); // and subsequntly im2col
+                                                 // matrix ka column use ho raha hai.
                 }
                 else
                 {
-                    iw2col[tid] = (half)0;
+                    iw2col[tid] = __float2half(0.0f);
                 }
             }
 
@@ -105,11 +96,12 @@ namespace seera_cuda
             int ni = blockIdx.y * 16 + (tid % 16); // -> N
 
             if (ni < N && index_ < H_out * W_out)
-                conv[(batchno * N + ni) * H_out * W_out + index_] = sha_conv[tid];
+                conv[(batchno * N + ni) * H_out * W_out + index_] =
+                    sha_conv[tid];
         }
     }
 
-    __global__ void _weight_reduce(half *dW, half *dwn, int BatchN, int Cin,
+    __global__ void _weight_reduce(float *dW, float *dwn, int BatchN, int Cin,
                                    int Cout, int R, int S)
     {
         int index = blockIdx.x * blockDim.x + threadIdx.x; //-> Cout,Cin,R,S
@@ -117,7 +109,7 @@ namespace seera_cuda
         int r = (index / S) % R;
         int cout = (index / (S * R)) % Cout;
         int cin = index / (S * R * Cout);
-        half temp = (half)0;
+        float temp = 0.0f;
         if (s < S && r < R && cin < Cin && cout < Cout)
         {
             for (int ii = 0; ii < BatchN; ii++)
@@ -150,14 +142,10 @@ namespace seera_cuda
     // --- dX kernels: ConvTranspose(dY, W) → dX ---
     // Reusing the same WMMA conv-transpose matmul pattern from upsampling.cu
 
-    // WMMA matmul for ConvTranspose: computes W_rearranged^T @ X_col
-    // Result: [Cout*R*S, Batch*Hin*Win] intermediate for col2im
-    __global__ void conv2d_bwd_transmatmul(half *W, half *X, half *C_out, int M,
+    __global__ void conv2d_bwd_transmatmul(float *W, float *X, float *C_out, int M,   //-> WROTE THIS KERNEL EVEN AFTER 48 HOURS OF NO SLEEP!!!! PEAK 
                                            int N, int K, int Cout, int R, int S,
                                            int BATCH, int Hin, int Win)
     {
-        // K -> Cin (=N_conv), M -> Cout*R*S (=C_conv*R*S), N -> Batch*Hin*Win
-        // W layout: [Cin, Cout, R, S] = [N_conv, C_conv, R, S]
         int warpM = blockIdx.y * 16;
         int warpN = blockIdx.x * 16;
 
@@ -178,7 +166,6 @@ namespace seera_cuda
                 int row = linear_idx / 16;
                 int col = linear_idx % 16;
 
-                // A: W_rearranged[Cout*R*S, Cin] — row = cout*R*S index, col = cin
                 int global_row_A = warpM + row;
                 int A_s = global_row_A % S;
                 int A_r = (global_row_A / S) % R;
@@ -187,17 +174,14 @@ namespace seera_cuda
                 int A_cin = p + col;
                 if (global_row_A < M && A_cin < K)
                 {
-                    // W[cin, cout, r, s] = W[A_cin * (Cout*R*S) + A_cout*(R*S) + A_r*S +
-                    // A_s]
-                    shA[linear_idx] =
-                        W[A_cin * (Cout * R * S) + A_cout * (R * S) + A_r * S + A_s];
+                    shA[linear_idx] = __float2half(
+                        W[A_cin * (Cout * R * S) + A_cout * (R * S) + A_r * S + A_s]);
                 }
                 else
                 {
                     shA[linear_idx] = __float2half(0.0f);
                 }
 
-                // B: X[Cin, Batch*Hin*Win] — row = cin, col = batch*spatial
                 int B_cin = p + row;
                 int global_col_B = warpN + col;
                 int B_w = global_col_B % Win;
@@ -205,8 +189,8 @@ namespace seera_cuda
                 int B_b = global_col_B / (Win * Hin);
                 if (B_cin < K && global_col_B < N)
                 {
-                    shB[linear_idx] =
-                        X[B_b * K * Hin * Win + B_cin * Hin * Win + B_h * Win + B_w];
+                    shB[linear_idx] = __float2half(
+                        X[B_b * K * Hin * Win + B_cin * Hin * Win + B_h * Win + B_w]);
                 }
                 else
                 {
@@ -240,10 +224,10 @@ namespace seera_cuda
     }
 
     // col2im kernel for dX reconstruction
-    __global__ void conv2d_bwd_col2im(half *d_out, half *d_in, int C, int R, int S,
-                                      int H_in, int W_in, int H_out, int W_out,
-                                      int stridew, int strideh, int padh, int padw,
-                                      int total_N)
+    __global__ void conv2d_bwd_col2im(float *d_out, float *d_in, int C, int R,
+                                      int S, int H_in, int W_in, int H_out,
+                                      int W_out, int stridew, int strideh, int padh,
+                                      int padw, int total_N)
     {
         int globalid = blockIdx.x * blockDim.x + threadIdx.x;
         int c = blockIdx.y;
@@ -255,7 +239,7 @@ namespace seera_cuda
         if (h_in >= H_in || w_in >= W_in || c >= C)
             return;
 
-        half temp = (half)0;
+        float temp = 0.0f;
         for (int row = 0; row < sr; row++)
         {
             int s = row % S;
@@ -282,12 +266,10 @@ namespace seera_cuda
     }
 
     // --- dW kernel: per-batch fused WMMA ---
-    // dW_b[N, C*R*S] = dY_b[N, H_out*W_out] @ im2col(X_b)[C*R*S, H_out*W_out]^T
-    // Grid: (ceil(CRS/16), ceil(N/16), batch)
-    __global__ void conv2d_dW_kernel(half *dY, half *X, half *dW_batch, int N_out,
-                                     int C, int H, int W, int R, int S, int H_out,
-                                     int W_out, int strideh, int stridew, int padh,
-                                     int padw)
+    __global__ void conv2d_dW_kernel(float *dY, float *X, float *dW_batch,
+                                     int N_out, int C, int H, int W, int R, int S,
+                                     int H_out, int W_out, int strideh, int stridew,
+                                     int padh, int padw)
     {
         int warpM = blockIdx.y * 16; // N (output channels) dimension
         int warpN = blockIdx.x * 16; // C*R*S dimension
@@ -318,7 +300,8 @@ namespace seera_cuda
                 int sp_idx = p + col;
                 if (n < N_out && sp_idx < spatial)
                 {
-                    shA[linear_idx] = dY[batchIdx * N_out * spatial + n * spatial + sp_idx];
+                    shA[linear_idx] =
+                        __float2half(dY[batchIdx * N_out * spatial + n * spatial + sp_idx]);
                 }
                 else
                 {
@@ -326,8 +309,6 @@ namespace seera_cuda
                 }
 
                 // B = im2col(X_b)[CRS, H_out*W_out] — fused load
-                // col_major fragment: computes A @ B^T
-                // Load B[warpN+row, p+col]
                 int crs_idx = warpN + row;
                 int sp_idx_b = p + col;
 
@@ -345,8 +326,8 @@ namespace seera_cuda
 
                     if (h_in >= 0 && h_in < H && w_in >= 0 && w_in < W)
                     {
-                        shB[linear_idx] =
-                            X[batchIdx * C * H * W + c * H * W + h_in * W + w_in];
+                        shB[linear_idx] = __float2half(
+                            X[batchIdx * C * H * W + c * H * W + h_in * W + w_in]);
                     }
                     else
                     {
@@ -380,15 +361,13 @@ namespace seera_cuda
             int gCol = warpN + col;
             if (gRow < N_out && gCol < CRS)
             {
-                dW_batch[batchIdx * N_out * CRS + gRow * CRS + gCol] =
-                    __float2half(shC[linear_idx]);
+                dW_batch[batchIdx * N_out * CRS + gRow * CRS + gCol] = shC[linear_idx];
             }
         }
     }
-    void cuda_conv2d_fwd(half *h_image, half *h_kernel, half *d_conv,
-                         int batchN, int C, int H, int W, int N, int R,
-                         int S, int pad_h, int pad_w, int stride_h,
-                         int stride_w)
+    void cuda_conv2d_fwd(float *h_image, float *h_kernel, float *d_conv, int batchN,
+                         int C, int H, int W, int N, int R, int S, int pad_h,
+                         int pad_w, int stride_h, int stride_w)
     {
         int H_out = (H + 2 * pad_h - R) / stride_h + 1;
         int W_out = (W + 2 * pad_w - S) / stride_w + 1;
@@ -396,9 +375,6 @@ namespace seera_cuda
         int input_elems = batchN * C * H * W;
         int kernel_elems = N * C * R * S;
         int output_elems = batchN * N * H_out * W_out;
-
-        // Device pointers
-        // half  *d_image, *d_kernel;
 
         // Launch convolution kernel
         int aa1 = ceil((float)H_out * W_out / 16);
@@ -415,29 +391,22 @@ namespace seera_cuda
     // ============================================================================
     // Conv2d backward entry point
     // ============================================================================
-    // X: [batch, C, H, W], W: [N, C, R, S], dY: [batch, N, H_out, W_out]
-    // Output: dX [batch, C, H, W], dW [N, C, R, S]
-    void cuda_conv2d_bwd(half *W, half *X, half *dY, half *dX, half *dW,
-                         int batch, int C, int H, int W_in, int N, int R,
-                         int S, int strideh, int stridew, int padh, int padw)
+    void cuda_conv2d_bwd(float *W, float *X, float *dY, float *dX, float *dW,
+                         int batch, int C, int H, int W_in, int N, int R, int S,
+                         int strideh, int stridew, int padh, int padw)
     {
         int H_out = (H + 2 * padh - R) / strideh + 1;
         int W_out = (W_in + 2 * padw - S) / stridew + 1;
         int CRS = C * R * S;
 
-        // ================================================================
         // Step 1: dX = ConvTranspose(dY, W)
-        //   ConvTranspose with: Cin=N, Cout=C, Hin=H_out, Win=W_out
-        //   W is [N, C, R, S] which is [Cin_trans, Cout_trans, R, S] ✓
-        //   Output spatial: (H_out-1)*stride - 2*pad + R = H
-        // ================================================================
         {
             int total_N_gemm = batch * H_out * W_out;
             int M_gemm = CRS; // C * R * S
             int K_gemm = N;   // contraction dim
 
-            half *intermediate;
-            cudaMalloc(&intermediate, M_gemm * total_N_gemm * sizeof(half));
+            float *intermediate;
+            cudaMalloc(&intermediate, M_gemm * total_N_gemm * sizeof(float));
 
             dim3 block(32);
             dim3 grid((total_N_gemm + 15) / 16, (M_gemm + 15) / 16);
@@ -448,8 +417,6 @@ namespace seera_cuda
             cudaDeviceSynchronize();
 
             // col2im: fold [C*R*S, batch*H_out*W_out] → [batch, C, H, W_in]
-            // H_col_out = (H + 2*pad - R) / stride + 1 = H_out (the GEMM's column
-            // spatial)
             int tpb = 256;
             dim3 grid_c2i((H * W_in + tpb - 1) / tpb, C, batch);
             dim3 block_c2i(tpb);
@@ -462,14 +429,10 @@ namespace seera_cuda
             cudaFree(intermediate);
         }
 
-        // ================================================================
         // Step 2: dW via per-batch fused WMMA + reduce
-        //   dW_b[N, CRS] = dY_b[N, spatial] @ im2col(X_b)[CRS, spatial]^T
-        //   Then: dW = sum_b dW_b
-        // ================================================================
         {
-            half *dW_batch;
-            cudaMalloc(&dW_batch, batch * N * CRS * sizeof(half));
+            float *dW_batch;
+            cudaMalloc(&dW_batch, batch * N * CRS * sizeof(float));
 
             dim3 block_dw(32);
             dim3 grid_dw((CRS + 15) / 16, (N + 15) / 16, batch);

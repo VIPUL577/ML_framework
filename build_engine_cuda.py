@@ -33,7 +33,8 @@ def build():
             "unpooling.cu",
             "upsampling.cu",
             "reductionKernels.cu",
-            "data_transfer.cu",
+            "cuTen_essentails.cu", 
+            # "data_transfer.cu",
         ]
     ]
     bindings_cpp = os.path.join(src_dir, "cuda_bindings.cpp")

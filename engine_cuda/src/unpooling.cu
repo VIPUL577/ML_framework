@@ -1,12 +1,10 @@
-#include "seera_engine_cuda.hpp"
 #include <stdio.h>
 #include <cuda.h>
 #include <math.h>
 #include <time.h>
-#include <cuda_fp16.h>
 namespace seera_cuda
 {
-    __global__ void unpooling(half *inp, half *out, int N, int C, int H, int W, int sh, int sw) //-> launch with H*W(incoming)
+    __global__ void unpooling(float *inp, float *out, int N, int C, int H, int W, int sh, int sw) //-> launch with H*W(incoming)
     {
         int H_out = sh * H;
         int W_out = sw * W;
@@ -27,7 +25,7 @@ namespace seera_cuda
         }
     }
 
-    __global__ void unpooling_bwd(half *inp, half *dx, int N, int C, int H, int W, int sh, int sw) // -> launch with incoming as per fwd call
+    __global__ void unpooling_bwd(float *inp, float *dx, int N, int C, int H, int W, int sh, int sw) // -> launch with incoming as per fwd call
     {
         int index = blockIdx.x * blockDim.x + threadIdx.x;
         int w = index % W;
@@ -38,7 +36,7 @@ namespace seera_cuda
         int W_out = sh * W;
         if (h >= 0 && h < H && w >= 0 && w < W)
         {
-            half temp = (half)0;
+            float temp = 0.0f;
             for (int ii = 0; ii < sh; ii++)
             {
                 for (int jj = 0; jj < sw; jj++)
@@ -54,7 +52,7 @@ namespace seera_cuda
         }
     }
 
-    void cuda_unpooling_fwd(half *d_inp, half *d_out,
+    void cuda_unpooling_fwd(float *d_inp, float *d_out,
                                  int batchN, int C, int H, int W,
                                  int sh, int sw)
     {
@@ -65,7 +63,7 @@ namespace seera_cuda
         int spatial_out = H_out * W_out;
 
         // assume d_out already allocated
-        cudaMemset(d_out, 0, sizeof(half) * output_elems);
+        cudaMemset(d_out, 0, sizeof(float) * output_elems);
 
         int threads = 256;
         int Nblock = (spatial_out + threads - 1) / threads;
@@ -77,7 +75,7 @@ namespace seera_cuda
 
         cudaDeviceSynchronize();
     }
-    void cuda_unpooling_bwd(half *d_dout, half *d_dx,
+    void cuda_unpooling_bwd(float *d_dout, float *d_dx,
                                      int batchN, int C, int H, int W,
                                      int sh, int sw)
     {
@@ -85,7 +83,7 @@ namespace seera_cuda
         int spatial_in = H * W;
 
         // assume d_dx already allocated
-        cudaMemset(d_dx, 0, sizeof(half) * input_elems);
+        cudaMemset(d_dx, 0, sizeof(float) * input_elems);
 
         int threads = 256;
         int Nblock = (spatial_in + threads - 1) / threads;

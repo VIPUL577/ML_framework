@@ -2,11 +2,9 @@
 #include <cuda.h>
 #include <math.h>
 #include <time.h>
-#include <cuda_fp16.h>
-#include "seera_engine_cuda.hpp"
 namespace seera_cuda
 {
-    __global__ void col2im(half *d_out, half *d_in, int C, int R, int S, int H_in, int W_in, int H_out, int W_out, int stridew, int strideh, int padh, int padw)
+    __global__ void col2im(float *d_out, float *d_in, int C, int R, int S, int H_in, int W_in, int H_out, int W_out, int stridew, int strideh, int padh, int padw)
     {
         // H_in and W_in are of original image
         // C*S*R is in row
@@ -19,7 +17,7 @@ namespace seera_cuda
         int w_in = globalid % W_in;
         int h_in = globalid / W_in;
 
-        half temp = (half)0;
+        float temp = 0.0f;
         for (int row = 0; row < sr; row++)
         {
 
@@ -47,7 +45,7 @@ namespace seera_cuda
             d_out[(batchN * C + c) * H_in * W_in + globalid] = temp;
     }
 
-    void *cuda_col2im_gputogpu(half *d_in, half *d_out,
+    void *cuda_col2im_gputogpu(float *d_in, float *d_out,
                                int batchN, int C,
                                int H_in, int W_in,
                                int R, int S,

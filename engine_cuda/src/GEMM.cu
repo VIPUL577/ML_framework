@@ -4,21 +4,12 @@
 #include <mma.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "seera_engine_cuda.hpp"
 
 #include <time.h>
 namespace seera_cuda {
 using namespace nvcuda;
 
-__host__ __device__ inline  void float2halff(float *A, half *B) {
-  int globalid = blockIdx.x * blockDim.x + threadIdx.x;
-  B[globalid] = __float2half(A[globalid]);
-}
-__host__ __device__ inline void half2float(half *A, float *B) {
-  int globalid = blockIdx.x * blockDim.x + threadIdx.x;
-  B[globalid] = __half2float(A[globalid]);
-}
-__global__ void matmul_wmma_bound(half *A, half *B, half *C, int M, int N,
+__global__ void matmul_wmma_bound(float *A, float *B, float *C, int M, int N,
                                   int K) {
   int warpM = blockIdx.y * 16;
   int warpN = blockIdx.x * 16;
@@ -42,7 +33,7 @@ __global__ void matmul_wmma_bound(half *A, half *B, half *C, int M, int N,
       int global_row_A = warpM + row;
       int global_col_A = p + col;
       if (global_row_A < M && global_col_A < K) {
-        shA[linear_idx] = A[(global_row_A)*K + global_col_A];
+        shA[linear_idx] = __float2half(A[(global_row_A)*K + global_col_A]);
       } else {
         shA[linear_idx] = __float2half(0.0f);
       }
@@ -50,7 +41,7 @@ __global__ void matmul_wmma_bound(half *A, half *B, half *C, int M, int N,
       int global_row_B = p + row;
       int global_col_B = warpN + col;
       if (global_row_B < K && global_col_B < N) {
-        shB[linear_idx] = B[(batchno * K + global_row_B) * N + global_col_B];
+        shB[linear_idx] = __float2half(B[(batchno * K + global_row_B) * N + global_col_B]);
       } else {
         shB[linear_idx] = __float2half(0.0f);
       }
@@ -89,7 +80,7 @@ __global__ void matmul_wmma_bound(half *A, half *B, half *C, int M, int N,
 
 // ======================== FORWARD WRAPPER ========================
 
-void cuda_matmul(half *hA, half *hB, half *hC, int M, int N, int K,
+void cuda_matmul(float *hA, float *hB, float *hC, int M, int N, int K,
                  int Nbatch) {
 
   dim3 block(32);
@@ -102,7 +93,7 @@ void cuda_matmul(half *hA, half *hB, half *hC, int M, int N, int K,
 // ======================== UTILITY KERNELS ========================
 
 // Transpose a 2D matrix: in[rows x cols] → out[cols x rows]
-__global__ void transpose_2d(half *in, half *out, int rows, int cols) {
+__global__ void transpose_2d(float *in, float *out, int rows, int cols) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < rows * cols) {
     int r = idx / cols;
@@ -112,10 +103,10 @@ __global__ void transpose_2d(half *in, half *out, int rows, int cols) {
 }
 
 // Elementwise accumulate: dst[i] += src[i]
-__global__ void elemwise_accumulate(half *dst, half *src, int n) {
+__global__ void elemwise_accumulate(float *dst, float *src, int n) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < n) {
-    dst[idx] = __hadd(dst[idx], src[idx]);
+    dst[idx] = dst[idx] + src[idx];
   }
 }
 
@@ -128,16 +119,16 @@ __global__ void elemwise_accumulate(half *dst, half *src, int n) {
 //
 // Both computed by reusing matmul_wmma_bound with transposed inputs.
 
-void cuda_matmul_bwd(half *A, half *B, half *dC, half *dA, half *dB,
+void cuda_matmul_bwd(float *A, float *B, float *dC, float *dA, float *dB,
                      int M, int N, int K, int Nbatch) {
 
   int threads = 256;
 
   // --- Allocate temporaries ---
-  half *A_T, *B_T, *dA_temp;
-  cudaMalloc(&A_T, (size_t)K * M * sizeof(half));
-  cudaMalloc(&B_T, (size_t)Nbatch * N * K * sizeof(half));
-  cudaMalloc(&dA_temp, (size_t)M * K * sizeof(half));
+  float *A_T, *B_T, *dA_temp;
+  cudaMalloc(&A_T, (size_t)K * M * sizeof(float));
+  cudaMalloc(&B_T, (size_t)Nbatch * N * K * sizeof(float));
+  cudaMalloc(&dA_temp, (size_t)M * K * sizeof(float));
 
   // --- 1. Transpose A (M x K) → A_T (K x M) ---
   int total_A = M * K;
@@ -166,7 +157,7 @@ void cuda_matmul_bwd(half *A, half *B, half *dC, half *dA, half *dB,
   // For each batch: dC_b[M x N] @ B_T_b[N x K] = dA_b[M x K]
   // matmul_wmma_bound treats first arg as non-batched, second as batched.
   // With Nbatch=1: first arg = dC_b, second arg = B_T_b, result = dA_temp
-  cudaMemset(dA, 0, (size_t)M * K * sizeof(half));
+  cudaMemset(dA, 0, (size_t)M * K * sizeof(float));
 
   {
     dim3 block(32);

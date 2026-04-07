@@ -2,7 +2,6 @@
 #include <cuda_fp16.h>
 #include <math.h>
 #include <mma.h>
-#include "seera_engine_cuda.hpp"
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -15,7 +14,7 @@ namespace seera_cuda
     // ============================================================================
 
     __global__ void
-    conv2dTransmatmul(half *W, half *X, half *C, int M, int N, int K, int Cout,
+    conv2dTransmatmul(float *W, float *X, float *C, int M, int N, int K, int Cout,
                       int R, int S, int BATCH, int Hin,
                       int Win)
     { // k-> Cin, M-> Cout*R*S, N-> Batch*H_in*W_in
@@ -48,7 +47,7 @@ namespace seera_cuda
                 if (global_row_A < M && A_cin < K)
                 {
                     shA[linear_idx] =
-                        W[A_cin * (Cout * R * S) + A_cout * (R * S) + A_r * S + A_s];
+                        __float2half(W[A_cin * (Cout * R * S) + A_cout * (R * S) + A_r * S + A_s]);
                 }
                 else
                 {
@@ -63,7 +62,7 @@ namespace seera_cuda
                 if (B_cin < K && global_col_B < N)
                 {
                     shB[linear_idx] =
-                        X[B_b * K * Hin * Win + B_cin * Hin * Win + B_h * Win + B_w];
+                        __float2half(X[B_b * K * Hin * Win + B_cin * Hin * Win + B_h * Win + B_w]);
                 }
                 else
                 {
@@ -101,7 +100,7 @@ namespace seera_cuda
         }
     }
 
-    __global__ void col2im(half *d_out, half *d_in, int C, int R, int S, int H_in,
+    __global__ void col2im(float *d_out, float *d_in, int C, int R, int S, int H_in,
                            int W_in, int H_out, int W_out, int stridew, int strideh,
                            int padh, int padw, int total_N)
     {
@@ -115,7 +114,7 @@ namespace seera_cuda
         if (h_in >= H_in || w_in >= W_in || c >= C)
             return;
 
-        half temp = (half)0;
+        float temp = 0.0f;
         for (int row = 0; row < sr; row++)
         {
             int s = row % S;
@@ -141,7 +140,7 @@ namespace seera_cuda
         d_out[(batchN * C + c) * H_in * W_in + globalid] = temp;
     }
 
-    void cuda_col2im_gputogpu(half *d_in, half *d_out, int batchN, int C, int H_in,
+    void cuda_col2im_gputogpu(float *d_in, float *d_out, int batchN, int C, int H_in,
                               int W_in, int R, int S, int pad_h, int pad_w,
                               int stride_h, int stride_w, int total_N)
     {
@@ -159,8 +158,8 @@ namespace seera_cuda
         cudaDeviceSynchronize();
     }
 
-    __global__ void convulution_eff_bwd(const half *input_image, half *conv,
-                                        half *kernel, int N, int C, int H, int W,
+    __global__ void convulution_eff_bwd(const float *input_image, float *conv,
+                                        float *kernel, int N, int C, int H, int W,
                                         int R, int S, int pad_h, int pad_w,
                                         int stride_h, int stride_w, int H_out,
                                         int W_out)
@@ -202,21 +201,21 @@ namespace seera_cuda
                 if (ni < N && ky_is < S && ky_ir < R)
                 {
                     int kernel_idx = ni * (C * S * R) + global_kernel_;
-                    krl[tid] = kernel[kernel_idx];
+                    krl[tid] = __float2half(kernel[kernel_idx]);
                 }
                 else
                 {
-                    krl[tid] = (half)0;
+                    krl[tid] = __float2half(0.0f);
                 }
 
                 if (h_in >= 0 && h_in < H && w_in >= 0 && w_in < W && ky_ic < C)
                 {
                     int input_idx = ((batchno * C + ky_ic) * H + h_in) * W + w_in;
-                    iw2col[tid] = input_image[input_idx];
+                    iw2col[tid] = __float2half(input_image[input_idx]);
                 }
                 else
                 {
-                    iw2col[tid] = (half)0;
+                    iw2col[tid] = __float2half(0.0f);
                 }
             }
             __syncthreads();
@@ -243,13 +242,7 @@ namespace seera_cuda
     // ============================================================================
     // dW WMMA kernel: per-batch fused im2col + GEMM
     // ============================================================================
-    // For each batch b:
-    //   A = X_b[Cin, Hin*Win]      -- row-major
-    //   B = im2col(dY_b)[Cout*KH*KW, Hin*Win]  -- fused into tile load
-    //   dW_b[Cin, Cout*KH*KW] = A @ B^T
-    //
-    // Grid: (ceil(CRS/16), ceil(Cin/16), batch)
-    __global__ void conv2dTrans_dW_kernel(half *X, half *dY, half *dW_batch,
+    __global__ void conv2dTrans_dW_kernel(float *X, float *dY, float *dW_batch,
                                           int Cin, int Hin, int Win, int Cout,
                                           int KH, int KW, int Hout, int Wout,
                                           int strideh, int stridew, int padh,
@@ -283,7 +276,7 @@ namespace seera_cuda
                 int hw_idx = p + col;
                 if (cin < Cin && hw_idx < spatial)
                 {
-                    shA[linear_idx] = X[batchIdx * Cin * spatial + cin * spatial + hw_idx];
+                    shA[linear_idx] = __float2half(X[batchIdx * Cin * spatial + cin * spatial + hw_idx]);
                 }
                 else
                 {
@@ -310,8 +303,8 @@ namespace seera_cuda
 
                     if (h_out >= 0 && h_out < Hout && w_out >= 0 && w_out < Wout)
                     {
-                        shB[linear_idx] = dY[batchIdx * Cout * Hout * Wout +
-                                             cout_ * Hout * Wout + h_out * Wout + w_out];
+                        shB[linear_idx] = __float2half(dY[batchIdx * Cout * Hout * Wout +
+                                             cout_ * Hout * Wout + h_out * Wout + w_out]);
                     }
                     else
                     {
@@ -345,20 +338,20 @@ namespace seera_cuda
             if (gRow < Cin && gCol < CRS)
             {
                 dW_batch[batchIdx * Cin * CRS + gRow * CRS + gCol] =
-                    __float2half(shC[linear_idx]);
+                    shC[linear_idx];
             }
         }
     }
 
     // Reduce dW across batch dimension: dW[i] = sum_b dW_batch[b * total + i]
-    __global__ void dW_batch_reduce(half *dW, half *dW_batch, int BatchN,
+    __global__ void dW_batch_reduce(float *dW, float *dW_batch, int BatchN,
                                     int total)
     {
         int index = blockIdx.x * blockDim.x + threadIdx.x;
         if (index >= total)
             return;
 
-        half temp = (half)0;
+        float temp = 0.0f;
         for (int b = 0; b < BatchN; b++)
             temp += dW_batch[b * total + index];
         dW[index] = temp;
@@ -367,10 +360,8 @@ namespace seera_cuda
     // ============================================================================
     // Backward pass entry point
     // ============================================================================
-    // W:  [Cin, Cout, KH, KW], X: [batch, Cin, Hin, Win], dY: [batch, Cout, Hout,
-    // Wout] Output: dX [batch, Cin, Hin, Win], dW [Cin, Cout, KH, KW]
-    void cuda_conv2DTranspose_bwd(half *W, half *X, half *dY, half *dX,
-                                       half *dW, int batch, int Cin, int Hin,
+    void cuda_conv2DTranspose_bwd(float *W, float *X, float *dY, float *dX,
+                                       float *dW, int batch, int Cin, int Hin,
                                        int Win, int Cout, int KH, int KW,
                                        int strideh, int stridew, int padh,
                                        int padw)
@@ -379,13 +370,13 @@ namespace seera_cuda
         int Wout = (Win - 1) * stridew - 2 * padw + KW;
         int CRS = Cout * KH * KW;
 
-        // ================================================================
+  // ================================================================
         // Step 1: dX = Conv2d(dY, W)
-        //   dY: [batch, Cout, Hout, Wout] = conv input  (C_input = Cout)
-        //   W:  [Cin, Cout, KH, KW]       = conv kernel (N_output = Cin)
-        //   dX: [batch, Cin, Hin, Win]     = conv output
-        //   H_out_conv = (Hout + 2*padh - KH)/strideh + 1 = Hin
-        // ================================================================
+  //   dY: [batch, Cout, Hout, Wout] = conv input  (C_input = Cout)
+  //   W:  [Cin, Cout, KH, KW]       = conv kernel (N_output = Cin)
+  //   dX: [batch, Cin, Hin, Win]     = conv output
+  //   H_out_conv = (Hout + 2*padh - KH)/strideh + 1 = Hin
+  // ================================================================
         {
             int aa1 = (Hin * Win + 15) / 16;
             int aa2 = (Cin + 15) / 16;
@@ -397,15 +388,15 @@ namespace seera_cuda
             cudaDeviceSynchronize();
         }
 
-        // ================================================================
+  // ================================================================
         // Step 2: dW via per-batch fused WMMA kernel + reduce
-        //   For each batch b:
-        //     dW_b[Cin, CRS] = X_b[Cin, spatial] @ im2col(dY_b)[CRS, spatial]^T
-        //   Then: dW = sum_b dW_b
-        // ================================================================
+  //   For each batch b:
+  //     dW_b[Cin, CRS] = X_b[Cin, spatial] @ im2col(dY_b)[CRS, spatial]^T
+  //   Then: dW = sum_b dW_b
+  // ================================================================
         {
-            half *dW_batch;
-            cudaMalloc(&dW_batch, batch * Cin * CRS * sizeof(half));
+            float *dW_batch;
+            cudaMalloc(&dW_batch, batch * Cin * CRS * sizeof(float));
 
             dim3 block_dw(32);
             dim3 grid_dw((CRS + 15) / 16, (Cin + 15) / 16, batch);
@@ -425,7 +416,7 @@ namespace seera_cuda
             cudaFree(dW_batch);
         }
     }
-    void cuda_conv2DTranpose_fwd(half *hA, half *hB, half *hC, int batch,
+    void cuda_conv2DTranpose_fwd(float *hA, float *hB, float *hC, int batch,
                                       int Cin, int Hin, int Win, int Cout, int KH,
                                       int KW, int strideh, int stridew, int padh,
                                       int padw)
@@ -437,8 +428,8 @@ namespace seera_cuda
         int M = Cout * KH * KW;
         int K = Cin;
 
-        half *intermediate;
-        cudaMalloc(&intermediate, M * N * sizeof(half));
+        float *intermediate;
+        cudaMalloc(&intermediate, M * N * sizeof(float));
 
         dim3 block(32);
         dim3 grid((N + 15) / 16, (M + 15) / 16);

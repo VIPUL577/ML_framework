@@ -1,26 +1,14 @@
-#include "seera_engine_cuda.hpp"
 #include <iostream>
 #include <vector>
 #include <iomanip>
 #include <cuda.h>
 #include <time.h>
 #include <math.h>
-#include <cuda_fp16.h>
 namespace seera_cuda
 {
-    __host__ __device__ inline void float2halff(float *A, half *B)
-    {
-        int globalid = blockIdx.x * blockDim.x + threadIdx.x;
-        B[globalid] = __float2half(A[globalid]);
-    }
-    __host__ __device__ inline void half2float(half *A, float *B)
-    {
-        int globalid = blockIdx.x * blockDim.x + threadIdx.x;
-        B[globalid] = __half2float(A[globalid]);
-    }
 
     __global__ void maxPool(
-        half *input_image, half *conv, short *mask,
+        float *input_image, float *conv, short *mask,
         int C, int H, int W, int R, int S,
         int pad_h, int pad_w, int stride_h, int stride_w,
         int H_out, int W_out)
@@ -29,7 +17,7 @@ namespace seera_cuda
         int batchN = blockIdx.y;
         int index_ = blockIdx.x * blockDim.x + threadIdx.x;
 
-        half temp = 0;
+        float temp = 0.0f;
         if (index_ < total_elements)
         {
             int w_out = index_ % W_out;
@@ -52,7 +40,7 @@ namespace seera_cuda
                     if (h_in >= 0 && h_in < H && w_in >= 0 && w_in < W && ni < C)
                     {
                         int input_idx = ((batchN * C + ni) * H + h_in) * W + w_in;
-                        half ing = input_image[input_idx];
+                        float ing = input_image[input_idx];
                         if (temp <= ing)
                         {
                             temp = ing;
@@ -65,8 +53,8 @@ namespace seera_cuda
                     }
                     else
                     {
-                        if (temp <= __float2half(0.0f))
-                            temp = __float2half(0.0f);
+                        if (temp <= 0.0f)
+                            temp = 0.0f;
                     }
                 }
             }
@@ -74,7 +62,7 @@ namespace seera_cuda
         }
     }
     __global__ void maxPool_bwd(
-        half *dX, half *dout, short *mask,
+        float *dX, float *dout, short *mask,
         int C, int H, int W, int R, int S,
         int pad_h, int pad_w, int stride_h, int stride_w,
         int W_out, int H_out)
@@ -97,12 +85,12 @@ namespace seera_cuda
             if (h_in >= 0 && h_in < H && w_in >= 0 && w_in < W)
             {
                 int index = (BatchN * C + c) * H * W + h_in * W + w_in;
-                atomicAdd(&(dX[index]), dout[(BatchN * C + c) * H_out * W_out + index_] * ((half)mask[index]));
+                atomicAdd(&(dX[index]), dout[(BatchN * C + c) * H_out * W_out + index_] * ((float)mask[index]));
             }
         }
     }
 
-    void cuda_maxpool_fwd(half *image, half *out, short *mask,
+    void cuda_maxpool_fwd(float *image, float *out, short *mask,
                           int batchN, int C, int H, int W,
                           int R, int S,
                           int pad_h, int pad_w,
@@ -115,7 +103,7 @@ namespace seera_cuda
         int output_elems_wob = C * H_out * W_out;
 
         // Assume 'out' is already cudaMalloc'ed by caller
-        cudaMemset(out, 0, sizeof(half) * output_elems);
+        cudaMemset(out, 0, sizeof(float) * output_elems);
 
         int threads_per_block = 256;
         int Nblock = (output_elems_wob + threads_per_block - 1) / threads_per_block;
@@ -132,9 +120,9 @@ namespace seera_cuda
     }
 
     void cuda_maxpool_bwd(
-        half *dout,  // [N,C,H_out,W_out]
+        float *dout,  // [N,C,H_out,W_out]
         short *mask, // [N,C,H,W]
-        half *dX,    // [N,C,H,W] (output)
+        float *dX,    // [N,C,H,W] (output)
         int batchN, int C, int H, int W,
         int R, int S,
         int pad_h, int pad_w,
@@ -147,7 +135,7 @@ namespace seera_cuda
         int output_elems_wob = H_out * W_out;
 
         // Assume dX already allocated
-        cudaMemset(dX, 0, sizeof(half) * input_elems);
+        cudaMemset(dX, 0, sizeof(float) * input_elems);
 
         int threads_per_block = 256;
         int Nblock = (output_elems_wob + threads_per_block - 1) / threads_per_block;

@@ -1,8 +1,6 @@
 #include <cuda.h>
-#include <cuda_fp16.h>
 #include <iostream>
 #include <math.h>
-#include "seera_engine_cuda.hpp"
 #include <stdio.h>
 #include <time.h>
 #include <vector>
@@ -10,21 +8,11 @@
 // git ls-files | xargs wc -l to count the number of lines
 namespace seera_cuda
 {
-  __host__ __device__ inline void float2halff(float *A, half *B)
-  {
-    int globalid = blockIdx.x * blockDim.x + threadIdx.x;
-    B[globalid] = __float2half(A[globalid]);
-  }
-  __host__ __device__ inline void half2float(half *A, float *B)
-  {
-    int globalid = blockIdx.x * blockDim.x + threadIdx.x;
-    B[globalid] = __half2float(A[globalid]);
-  }
 
-  __global__ void Reductionsum(half *arr, half *output, int limit, int stride,
-                               half divisor)
+  __global__ void Reductionsum(float *arr, float *output, int limit, int stride,
+                               float divisor)
   {
-    half temp = __float2half(0.0f);
+    float temp = 0.0f;
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int inner = tid % stride;
@@ -33,58 +21,58 @@ namespace seera_cuda
 
     for (int i = 0; i < limit; i += stride)
     {
-      temp = __hadd(temp, arr[base + i]);
+      temp = temp + arr[base + i];
     }
 
-    output[tid] = __hdiv(temp, divisor);
+    output[tid] = temp / divisor;
   }
 
-  __global__ void Reductionmax(half *arr, half *output, int limit, int stride,
-                               half dummy)
+  __global__ void Reductionmax(float *arr, float *output, int limit, int stride,
+                               float dummy)
   {
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
-    half temp = arr[base];
+    float temp = arr[base];
 
     for (int i = 0; i < limit; i += stride)
     {
-      temp = __hmax(temp, arr[base + i]);
+      temp = fmaxf(temp, arr[base + i]);
     }
 
     output[tid] = temp;
   }
-  __global__ void Reductionmin(half *arr, half *output, int limit, int stride,
-                               half dummy)
+  __global__ void Reductionmin(float *arr, float *output, int limit, int stride,
+                               float dummy)
   {
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
-    half temp = arr[base];
+    float temp = arr[base];
 
     for (int i = 0; i < limit; i += stride)
     {
-      temp = __hmin(temp, arr[base + i]);
+      temp = fminf(temp, arr[base + i]);
     }
 
     output[tid] = temp;
   }
-  __global__ void Reductionargmin(half *arr, int *output, int limit, int stride)
+  __global__ void Reductionargmin(float *arr, int *output, int limit, int stride)
   {
     int arg = 0;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
-    half temp = arr[base];
+    float temp = arr[base];
 
     for (int i = 0; i < limit; i += stride)
     {
-      if (__hgt(arr[base + i], temp) == 0)
+      if (arr[base + i] <= temp)
       {
         temp = arr[base + i];
         arg = i / stride;
@@ -93,18 +81,18 @@ namespace seera_cuda
 
     output[tid] = arg;
   }
-  __global__ void Reductionargmax(half *arr, int *output, int limit, int stride)
+  __global__ void Reductionargmax(float *arr, int *output, int limit, int stride)
   {
     int arg = 0;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
-    half temp = arr[base];
+    float temp = arr[base];
 
     for (int i = 0; i < limit; i += stride)
     {
-      if (__hlt(arr[base + i], temp) == 0)
+      if (arr[base + i] >= temp)
       {
         temp = arr[base + i];
         arg = i / stride;
@@ -115,8 +103,8 @@ namespace seera_cuda
   }
 
   template <typename Kernel>
-  void _cuda_reduce_gputogpu(half *A, half *out, int ndims, int dim, int *dimarr,
-                             half divisor, Kernel kernel)
+  void _cuda_reduce_gputogpu(float *A, float *out, int ndims, int dim, int *dimarr,
+                             float divisor, Kernel kernel)
   {
     int prod = 1;
     int stride = 1;
@@ -145,7 +133,7 @@ namespace seera_cuda
   }
 
   template <typename Kernel>
-  void _cuda_reduce_arg_gputogpu(half *A, int *out, int ndims, int dim,
+  void _cuda_reduce_arg_gputogpu(float *A, int *out, int ndims, int dim,
                                  int *dimarr, Kernel kernel)
   {
     int prod = 1, stride = 1, limit = 1, totalthreads = 1;
@@ -171,36 +159,36 @@ namespace seera_cuda
     cudaDeviceSynchronize();
   }
 
-  void cuda_sum_fwd(half *A, half *out, int ndims, int dim, int *dimarr)
+  void cuda_sum_fwd(float *A, float *out, int ndims, int dim, int *dimarr)
   {
-    _cuda_reduce_gputogpu(A, out, ndims, dim, dimarr, __float2half(1.0f),
+    _cuda_reduce_gputogpu(A, out, ndims, dim, dimarr, 1.0f,
                           Reductionsum);
   }
 
-  void cuda_mean_fwd(half *A, half *out, int ndims, int dim, int *dimarr)
+  void cuda_mean_fwd(float *A, float *out, int ndims, int dim, int *dimarr)
   {
     _cuda_reduce_gputogpu(A, out, ndims, dim, dimarr,
-                          __float2half((float)dimarr[dim]), Reductionsum);
+                          (float)dimarr[dim], Reductionsum);
   }
 
-  void cuda_max_fwd(half *A, half *out, int ndims, int dim, int *dimarr)
+  void cuda_max_fwd(float *A, float *out, int ndims, int dim, int *dimarr)
   {
-    _cuda_reduce_gputogpu(A, out, ndims, dim, dimarr, __float2half(0.0f),
+    _cuda_reduce_gputogpu(A, out, ndims, dim, dimarr, 0.0f,
                           Reductionmax);
   }
 
-  void cuda_min_fwd(half *A, half *out, int ndims, int dim, int *dimarr)
+  void cuda_min_fwd(float *A, float *out, int ndims, int dim, int *dimarr)
   {
-    _cuda_reduce_gputogpu(A, out, ndims, dim, dimarr, __float2half(0.0f),
+    _cuda_reduce_gputogpu(A, out, ndims, dim, dimarr, 0.0f,
                           Reductionmin);
   }
 
-  void cuda_argmax_fwd(half *A, int *out, int ndims, int dim, int *dimarr)
+  void cuda_argmax_fwd(float *A, int *out, int ndims, int dim, int *dimarr)
   {
     _cuda_reduce_arg_gputogpu(A, out, ndims, dim, dimarr, Reductionargmax);
   }
 
-  void cuda_argmin_fwd(half *A, int *out, int ndims, int dim, int *dimarr)
+  void cuda_argmin_fwd(float *A, int *out, int ndims, int dim, int *dimarr)
   {
     _cuda_reduce_arg_gputogpu(A, out, ndims, dim, dimarr, Reductionargmin);
   }
@@ -209,15 +197,15 @@ namespace seera_cuda
 
   // sum backward: broadcast upstream gradient back along reduced dimension
   // dA[outer * limit + inner + i*stride] = dOut[tid]  for i in [0, dimarr[dim])
-  __global__ void Reductionsum_bwd(half *dOut, half *dA, int limit, int stride,
-                                   half divisor)
+  __global__ void Reductionsum_bwd(float *dOut, float *dA, int limit, int stride,
+                                   float divisor)
   {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
 
-    half grad = __hdiv(dOut[tid], divisor);
+    float grad = dOut[tid] / divisor;
 
     for (int i = 0; i < limit; i += stride)
     {
@@ -227,55 +215,55 @@ namespace seera_cuda
 
   // max/min backward: gradient flows only to the position matching the forward output
   // dA[position_of_max] = dOut[tid], all others = 0
-  __global__ void Reductionmax_bwd(half *dOut, half *fwdInput, half *fwdOutput,
-                                   half *dA, int limit, int stride)
+  __global__ void Reductionmax_bwd(float *dOut, float *fwdInput, float *fwdOutput,
+                                   float *dA, int limit, int stride)
   {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
 
-    half out_val = fwdOutput[tid];
-    half grad = dOut[tid];
+    float out_val = fwdOutput[tid];
+    float grad = dOut[tid];
     int found = 0;
 
     for (int i = 0; i < limit; i += stride)
     {
       // Route gradient to the first position that matches the max value
-      if (!found && __heq(fwdInput[base + i], out_val))
+      if (!found && fwdInput[base + i] == out_val)
       {
         dA[base + i] = grad;
         found = 1;
       }
       else
       {
-        dA[base + i] = __float2half(0.0f);
+        dA[base + i] = 0.0f;
       }
     }
   }
 
-  __global__ void Reductionmin_bwd(half *dOut, half *fwdInput, half *fwdOutput,
-                                   half *dA, int limit, int stride)
+  __global__ void Reductionmin_bwd(float *dOut, float *fwdInput, float *fwdOutput,
+                                   float *dA, int limit, int stride)
   {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
 
-    half out_val = fwdOutput[tid];
-    half grad = dOut[tid];
+    float out_val = fwdOutput[tid];
+    float grad = dOut[tid];
     int found = 0;
 
     for (int i = 0; i < limit; i += stride)
     {
-      if (!found && __heq(fwdInput[base + i], out_val))
+      if (!found && fwdInput[base + i] == out_val)
       {
         dA[base + i] = grad;
         found = 1;
       }
       else
       {
-        dA[base + i] = __float2half(0.0f);
+        dA[base + i] = 0.0f;
       }
     }
   }
@@ -284,8 +272,8 @@ namespace seera_cuda
 
   // Template wrapper for sum/mean backward (same kernel signature as forward)
   template <typename Kernel>
-  void _cuda_reduce_bwd_gputogpu(half *dOut, half *dA, int ndims, int dim,
-                                 int *dimarr, half divisor, Kernel kernel)
+  void _cuda_reduce_bwd_gputogpu(float *dOut, float *dA, int ndims, int dim,
+                                 int *dimarr, float divisor, Kernel kernel)
   {
     int prod = 1;
     int stride = 1;
@@ -313,8 +301,8 @@ namespace seera_cuda
 
   // Template wrapper for max/min backward (sparse gradient, extra saved-tensor args)
   template <typename Kernel>
-  void _cuda_reduce_bwd_sparse_gputogpu(half *dOut, half *fwdInput,
-                                        half *fwdOutput, half *dA, int ndims,
+  void _cuda_reduce_bwd_sparse_gputogpu(float *dOut, float *fwdInput,
+                                        float *fwdOutput, float *dA, int ndims,
                                         int dim, int *dimarr, Kernel kernel)
   {
     int prod = 1;
@@ -343,33 +331,33 @@ namespace seera_cuda
   }
 
   // sum backward: dA[i] = dOut[reduced_idx] (broadcast, no scaling)
-  void cuda_sum_bwd(half *dOut, half *dA, int ndims, int dim,
+  void cuda_sum_bwd(float *dOut, float *dA, int ndims, int dim,
                     int *dimarr)
   {
-    _cuda_reduce_bwd_gputogpu(dOut, dA, ndims, dim, dimarr, __float2half(1.0f),
+    _cuda_reduce_bwd_gputogpu(dOut, dA, ndims, dim, dimarr, 1.0f,
                               Reductionsum_bwd);
   }
 
   // mean backward: dA[i] = dOut[reduced_idx] / dimarr[dim]
-  void cuda_mean_bwd(half *dOut, half *dA, int ndims, int dim,
+  void cuda_mean_bwd(float *dOut, float *dA, int ndims, int dim,
                      int *dimarr)
   {
     _cuda_reduce_bwd_gputogpu(dOut, dA, ndims, dim, dimarr,
-                              __float2half((float)dimarr[dim]),
+                              (float)dimarr[dim],
                               Reductionsum_bwd);
   }
 
   // max backward: dA[argmax_pos] = dOut, rest = 0 (requires saved fwd input/output)
-  void cuda_max_bwd(half *dOut, half *fwdInput, half *fwdOutput,
-                    half *dA, int ndims, int dim, int *dimarr)
+  void cuda_max_bwd(float *dOut, float *fwdInput, float *fwdOutput,
+                    float *dA, int ndims, int dim, int *dimarr)
   {
     _cuda_reduce_bwd_sparse_gputogpu(dOut, fwdInput, fwdOutput, dA, ndims, dim,
                                      dimarr, Reductionmax_bwd);
   }
 
   // min backward: dA[argmin_pos] = dOut, rest = 0 (requires saved fwd input/output)
-  void cuda_min_bwd(half *dOut, half *fwdInput, half *fwdOutput,
-                    half *dA, int ndims, int dim, int *dimarr)
+  void cuda_min_bwd(float *dOut, float *fwdInput, float *fwdOutput,
+                    float *dA, int ndims, int dim, int *dimarr)
   {
     _cuda_reduce_bwd_sparse_gputogpu(dOut, fwdInput, fwdOutput, dA, ndims, dim,
                                      dimarr, Reductionmin_bwd);
