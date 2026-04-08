@@ -511,4 +511,34 @@ PYBIND11_MODULE(seera_cuda, m)
                   reinterpret_cast<float *>(B),
                   reinterpret_cast<float *>(C),
                   size); }, "Elementwise mul (float)");
+
+      // ══════════════════════════════════════════════════════════════════
+      // Broadcasting Ops (4-D)
+      // ══════════════════════════════════════════════════════════════════
+
+      m.def("broadcast_add_4d", [](uintptr_t A, uintptr_t B, uintptr_t C,
+                                    int aN, int aC, int aH, int aW,
+                                    int bN, int bC, int bH, int bW)
+            { seera_cuda::broadcast_add_4d(
+                  reinterpret_cast<const float *>(A),
+                  reinterpret_cast<const float *>(B),
+                  reinterpret_cast<float *>(C),
+                  aN, aC, aH, aW,
+                  bN, bC, bH, bW); }, "Broadcast add 4D (GPU ptrs)");
+
+      m.def("broadcast_mul_4d", [](uintptr_t A, uintptr_t B, uintptr_t C,
+                                    int aN, int aC, int aH, int aW,
+                                    int bN, int bC, int bH, int bW)
+            { seera_cuda::broadcast_mul_4d(
+                  reinterpret_cast<const float *>(A),
+                  reinterpret_cast<const float *>(B),
+                  reinterpret_cast<float *>(C),
+                  aN, aC, aH, aW,
+                  bN, bC, bH, bW); }, "Broadcast mul 4D (GPU ptrs)");
+
+      m.def("compute_out_size_4d", [](int aN, int aC, int aH, int aW,
+                                       int bN, int bC, int bH, int bW) -> int
+            { return seera_cuda::compute_out_size_4d(
+                  aN, aC, aH, aW,
+                  bN, bC, bH, bW); }, "Compute broadcast output size for 4D tensors");
 }

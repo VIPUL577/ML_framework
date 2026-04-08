@@ -98,7 +98,6 @@ namespace seera_cuda
     void cuda_scaler_add_f(float *arr, float k, int total_elements);
     void cuda_scaler_power_f(float *arr, float k, int total_elements);
 
-
     void cuda_ones_f(float *arr, int total_elements);
     void cuda_zeros_f(float *arr, int total_elements);
 
@@ -109,7 +108,21 @@ namespace seera_cuda
     void cuda_elemsub_gputogpu(float *A, float *B, float *C, int size);
 
     void cuda_elemdiv_gputogpu(float *A, float *B, float *C, int size);
+    // broadcasting
 
+    void broadcast_add_4d(
+        const float *A, const float *B, float *C,
+        int aN, int aC, int aH, int aW,
+        int bN, int bC, int bH, int bW);
+
+    void broadcast_mul_4d(
+        const float *A, const float *B, float *C,
+        int aN, int aC, int aH, int aW,
+        int bN, int bC, int bH, int bW);
+
+    int compute_out_size_4d(
+        int aN, int aC, int aH, int aW,
+        int bN, int bC, int bH, int bW);
 }
 
 /*

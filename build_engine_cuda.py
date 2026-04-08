@@ -33,7 +33,8 @@ def build():
             "unpooling.cu",
             "upsampling.cu",
             "reductionKernels.cu",
-            "cuTen_essentails.cu", 
+            "cuTen_essentails.cu",
+            "broadcast.cu",
             # "data_transfer.cu",
         ]
     ]

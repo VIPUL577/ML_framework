@@ -1,6 +1,24 @@
 from Seera_Engine import Tensor, np, autograd4nn
+from Seera_init import _where, _is_gpu
+from cuTen import cuten
 import matplotlib.pyplot as plt
 import pickle
+
+# ─────────────────────────────────────────────────────────────
+# Helper: bring a cuten gradient to host numpy for optimizer math
+# ─────────────────────────────────────────────────────────────
+def _to_host(val):
+    """If val is a cuten, bring to host as float32 np.ndarray. Else return as-is."""
+    if isinstance(val, cuten):
+        return val.to_host_f32()
+    return val
+
+def _to_gpu(val):
+    """If val is a numpy array, convert to cuten. If already cuten, return as-is."""
+    if isinstance(val, cuten):
+        return val
+    return cuten(np.ascontiguousarray(val, dtype=np.float32))
+
 
 # ─────────────────────────────────────────────────────────────
 # Base Layer
@@ -94,8 +112,13 @@ class Dense(Layer):
         return self.outputs
 
     def update_params(self, vW, vB):
-        self.weights.value -= vW
-        self.bais.value -= vB
+        if _is_gpu(self.weights.value):
+            # vW, vB are cuten tensors (GPU-native optimizer)
+            self.weights.value = self.weights.value + vW * (-1)
+            self.bais.value = self.bais.value + vB * (-1)
+        else:
+            self.weights.value -= vW
+            self.bais.value -= vB
 
     def get_weights(self):
         return self.weights, self.bais
@@ -180,7 +203,7 @@ class Conv2D(Layer):
     def forward(self):
         self.inputs = self.inpobj.outputs
         inp = self.inputs.value
-        if inp.ndim == 3:
+        if not _is_gpu(inp) and inp.ndim == 3:
             inp = inp[np.newaxis]
 
         N, C, H, W_in = inp.shape
@@ -191,7 +214,10 @@ class Conv2D(Layer):
 
         # Lazy-init bias with correct spatial dims
         if isinstance(self.bais, int) or self.bais.shape != (1, self.out_channels, 1, 1):
-            self.bais = Tensor.zeros((1, self.out_channels, 1, 1))
+            if _is_gpu(self.inputs.value):
+                self.bais = Tensor.zeros((1, self.out_channels, 1, 1), device="cuda")
+            else:
+                self.bais = Tensor.zeros((1, self.out_channels, 1, 1))
 
         self.z = Tensor.conv2d(
             self.inputs, self.weights, stride=self.stride, padding=self.zero_padding
@@ -208,8 +234,12 @@ class Conv2D(Layer):
             self.bais = B
 
     def update_params(self, vW, vB):
-        self.weights.value -= vW
-        self.bais.value -= vB
+        if _is_gpu(self.weights.value):
+            self.weights.value = self.weights.value + vW * (-1)
+            self.bais.value = self.bais.value + vB * (-1)
+        else:
+            self.weights.value -= vW
+            self.bais.value -= vB
 
     def get_weights(self):
         return self.weights, self.bais
@@ -329,7 +359,7 @@ class ConvTranspose2D(Layer):
     def forward(self):
         self.inputs = self.inpobj.outputs
         inp = self.inputs.value
-        if inp.ndim == 3:
+        if not _is_gpu(inp) and inp.ndim == 3:
             inp = inp[np.newaxis]
 
         N, Cin, H, W_in = inp.shape
@@ -340,7 +370,10 @@ class ConvTranspose2D(Layer):
 
         # Lazy-init bias
         if isinstance(self.bais, int) or self.bais.shape != (1, self.out_channels, 1, 1):
-            self.bais = Tensor.zeros((1, self.out_channels, 1, 1))
+            if _is_gpu(self.inputs.value):
+                self.bais = Tensor.zeros((1, self.out_channels, 1, 1), device="cuda")
+            else:
+                self.bais = Tensor.zeros((1, self.out_channels, 1, 1))
 
         self.z = Tensor.conv_transpose2d(
             self.inputs, self.weights,
@@ -358,8 +391,12 @@ class ConvTranspose2D(Layer):
             self.bais = B
 
     def update_params(self, vW, vB):
-        self.weights.value -= vW
-        self.bais.value -= vB
+        if _is_gpu(self.weights.value):
+            self.weights.value = self.weights.value + vW * (-1)
+            self.bais.value = self.bais.value + vB * (-1)
+        else:
+            self.weights.value -= vW
+            self.bais.value -= vB
 
     def get_weights(self):
         return self.weights, self.bais
@@ -430,7 +467,7 @@ class Concatenate(Layer):
 
 
 # ─────────────────────────────────────────────────────────────
-# BatchNorm1d  (for Dense layers)
+# BatchNorm1d  (for Dense layers) — CPU only backward
 # ─────────────────────────────────────────────────────────────
 class BatchNorm1d(Layer):
     def __init__(self, num_features, momentum=0.1, eps=1e-5):
@@ -489,7 +526,7 @@ class BatchNorm1d(Layer):
 
 
 # ─────────────────────────────────────────────────────────────
-# BatchNorm2d  (for Conv layers)
+# BatchNorm2d  (for Conv layers) — CPU only backward
 # ─────────────────────────────────────────────────────────────
 class BatchNorm2d(Layer):
     def __init__(self, num_channels, momentum=0.1, eps=1e-5):
@@ -548,20 +585,73 @@ class BatchNorm2d(Layer):
 
 
 # ─────────────────────────────────────────────────────────────
-# Sequential Model (with batch training support)
+# Sequential Model (with batch training support, CPU + GPU)
 # ─────────────────────────────────────────────────────────────
 class Sequential:
-    def __init__(self, layers):
+    def __init__(self, layers, device="cpu"):
         if not isinstance(layers, list):
             raise TypeError("Layers must be a list")
         if not isinstance(layers[0], Input):
             raise TypeError("First layer must be an Input layer")
+        self.device = device
         layerlis = [layers[0]]
         for i, layer in enumerate(layers):
             if i == 0:
                 continue
             layerlis.append(layer(layers[i - 1]))
         self.model = layerlis
+        if device == "cuda":
+            self._move_params_to_device()
+
+    def _move_params_to_device(self):
+        """Move all learnable parameters to GPU (cuten)."""
+        for layer in self.model:
+            if isinstance(layer, (Dense, Conv2D, ConvTranspose2D)):
+                if not _is_gpu(layer.weights.value):
+                    layer.weights.value = cuten(np.ascontiguousarray(
+                        layer.weights.value, dtype=np.float32))
+                    # Rebuild gradient placeholders for GPU
+                    z1 = cuten.zeros_like(layer.weights.value)
+                    z2 = cuten.zeros_like(layer.weights.value)
+                    z3 = cuten.zeros_like(layer.weights.value)
+                    z4 = cuten.zeros_like(layer.weights.value)
+                    layer.weights.node.child_grad = np.array(
+                        [[z1, z2], [z3, z4]], dtype=object)
+                    layer.weights.node.cp = cuten.zeros_like(layer.weights.value)
+                # bias: Dense has it at init, Conv2D/ConvTranspose2D lazy-init it
+                if hasattr(layer, 'bais') and isinstance(layer.bais, Tensor) and not _is_gpu(layer.bais.value):
+                    layer.bais.value = cuten(np.ascontiguousarray(
+                        layer.bais.value, dtype=np.float32))
+                    z1 = cuten.zeros_like(layer.bais.value)
+                    z2 = cuten.zeros_like(layer.bais.value)
+                    z3 = cuten.zeros_like(layer.bais.value)
+                    z4 = cuten.zeros_like(layer.bais.value)
+                    layer.bais.node.child_grad = np.array(
+                        [[z1, z2], [z3, z4]], dtype=object)
+                    layer.bais.node.cp = cuten.zeros_like(layer.bais.value)
+            elif isinstance(layer, (BatchNorm1d, BatchNorm2d)):
+                if not _is_gpu(layer.gamma.value):
+                    layer.gamma.value = cuten(np.ascontiguousarray(
+                        layer.gamma.value, dtype=np.float32))
+                    z1 = cuten.zeros_like(layer.gamma.value)
+                    z2 = cuten.zeros_like(layer.gamma.value)
+                    z3 = cuten.zeros_like(layer.gamma.value)
+                    z4 = cuten.zeros_like(layer.gamma.value)
+                    layer.gamma.node.child_grad = np.array(
+                        [[z1, z2], [z3, z4]], dtype=object)
+                    layer.gamma.node.cp = cuten.zeros_like(layer.gamma.value)
+                    layer.weights = layer.gamma
+                if not _is_gpu(layer.beta.value):
+                    layer.beta.value = cuten(np.ascontiguousarray(
+                        layer.beta.value, dtype=np.float32))
+                    z1 = cuten.zeros_like(layer.beta.value)
+                    z2 = cuten.zeros_like(layer.beta.value)
+                    z3 = cuten.zeros_like(layer.beta.value)
+                    z4 = cuten.zeros_like(layer.beta.value)
+                    layer.beta.node.child_grad = np.array(
+                        [[z1, z2], [z3, z4]], dtype=object)
+                    layer.beta.node.cp = cuten.zeros_like(layer.beta.value)
+                    layer.bais = layer.beta
 
     def forward(self, X=None):
         if X is not None:
@@ -589,8 +679,13 @@ class Sequential:
         """Reset all parameter gradients to zero."""
         for layer in self.model:
             if hasattr(layer, "update_params"):
-                layer.weights.node.cp = np.zeros_like(layer.weights.value)
-                layer.bais.node.cp = np.zeros_like(layer.bais.value)
+                bk = _where(layer.weights.value)
+                if bk is cuten:
+                    layer.weights.node.cp = cuten.zeros_like(layer.weights.value)
+                    layer.bais.node.cp = cuten.zeros_like(layer.bais.value)
+                else:
+                    layer.weights.node.cp = np.zeros_like(layer.weights.value)
+                    layer.bais.node.cp = np.zeros_like(layer.bais.value)
 
     def get_params(self):
         for layer in self.model:
@@ -613,6 +708,7 @@ class Sequential:
         """
         history = []
         num_samples = X_train.shape[0]
+        use_gpu = (self.device == "cuda")
 
         for epoch in range(Epochs):
             # Shuffle data at each epoch
@@ -625,8 +721,12 @@ class Sequential:
 
             for start in range(0, num_samples, batch_size):
                 end = min(start + batch_size, num_samples)
-                X_batch = Tensor(X_shuffled[start:end], is_leaf=True)
-                y_batch = Tensor(y_shuffled[start:end])
+                if use_gpu:
+                    X_batch = Tensor(X_shuffled[start:end], is_leaf=True, device="cuda")
+                    y_batch = Tensor(y_shuffled[start:end], device="cuda")
+                else:
+                    X_batch = Tensor(X_shuffled[start:end], is_leaf=True)
+                    y_batch = Tensor(y_shuffled[start:end])
 
                 # Forward
                 ypred = self.forward(X_batch)
@@ -635,10 +735,16 @@ class Sequential:
                 loss = Loss(ypred, y_batch)
 
                 # For batch: take mean loss across batch for single scalar
-                if loss.value.ndim > 0 and loss.value.size > 1:
-                    loss = loss.mean()
+                if use_gpu:
+                    # GPU: loss.value is cuten, check shape
+                    if len(loss.value.shape) > 0 and loss.value.size > 1:
+                        loss = loss.mean()
+                    batch_loss = float(np.sum(loss.value.to_host_f32()))
+                else:
+                    if loss.value.ndim > 0 and loss.value.size > 1:
+                        loss = loss.mean()
+                    batch_loss = float(np.sum(loss.value))
 
-                batch_loss = float(np.sum(loss.value))
                 epoch_loss += batch_loss
                 num_batches += 1
 
@@ -717,8 +823,11 @@ class Sequential:
 
             if hasattr(layer, "get_weights"):
                 w, b = layer.get_weights()
-                layer_info["weights"] = w.value if hasattr(w, "value") else w
-                layer_info["bais"] = b.value if hasattr(b, "value") else b
+                wv = w.value if hasattr(w, "value") else w
+                bv = b.value if hasattr(b, "value") else b
+                # bring to host if GPU
+                layer_info["weights"] = _to_host(wv) if isinstance(wv, cuten) else wv
+                layer_info["bais"] = _to_host(bv) if isinstance(bv, cuten) else bv
 
             model_data.append(layer_info)
 
@@ -825,7 +934,7 @@ class Loss:
 
 
 # ─────────────────────────────────────────────────────────────
-# SGD Optimizer
+# SGD Optimizer (GPU-native when device=cuda)
 # ─────────────────────────────────────────────────────────────
 class SGD:
     def __init__(self, model, lr, momentum=0):
@@ -834,6 +943,7 @@ class SGD:
         self.model = model
         self.lr = lr
         self.momentum = momentum
+        self.use_gpu = (model.device == "cuda")
         self.velocity = {}
         for layer in self.model.model:
             self.velocity[layer] = [0, 0]
@@ -843,13 +953,28 @@ class SGD:
             if hasattr(layer, "update_params"):
                 g0 = layer.weights.node.cp
                 g1 = layer.bais.node.cp
-                self.velocity[layer][0] = self.momentum * self.velocity[layer][0] + self.lr * g0
-                self.velocity[layer][1] = self.momentum * self.velocity[layer][1] + self.lr * g1
-                layer.update_params(self.velocity[layer][0], self.velocity[layer][1])
+
+                if self.use_gpu:
+                    # GPU path: everything stays as cuten
+                    if isinstance(self.velocity[layer][0], (int, float)):
+                        # First step: init velocity on GPU
+                        self.velocity[layer][0] = g0 * self.lr
+                        self.velocity[layer][1] = g1 * self.lr
+                    else:
+                        self.velocity[layer][0] = self.velocity[layer][0] * self.momentum + g0 * self.lr
+                        self.velocity[layer][1] = self.velocity[layer][1] * self.momentum + g1 * self.lr
+                    layer.update_params(self.velocity[layer][0], self.velocity[layer][1])
+                else:
+                    # CPU path
+                    g0 = _to_host(g0)
+                    g1 = _to_host(g1)
+                    self.velocity[layer][0] = self.momentum * self.velocity[layer][0] + self.lr * g0
+                    self.velocity[layer][1] = self.momentum * self.velocity[layer][1] + self.lr * g1
+                    layer.update_params(self.velocity[layer][0], self.velocity[layer][1])
 
 
 # ─────────────────────────────────────────────────────────────
-# Adam Optimizer
+# Adam Optimizer (GPU-native when device=cuda)
 # ─────────────────────────────────────────────────────────────
 class Adam:
     def __init__(self, model, lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8):
@@ -861,6 +986,7 @@ class Adam:
         self.beta2 = beta2
         self.eps = eps
         self.t = 1
+        self.use_gpu = (model.device == "cuda")
 
         self.m = {}
         self.v = {}
@@ -874,21 +1000,52 @@ class Adam:
                 g0 = layer.weights.node.cp
                 g1 = layer.bais.node.cp
 
-                self.m[layer][0] = self.beta1 * self.m[layer][0] + (1 - self.beta1) * g0
-                self.m[layer][1] = self.beta1 * self.m[layer][1] + (1 - self.beta1) * g1
+                if self.use_gpu:
+                    # GPU path: everything stays as cuten
+                    if isinstance(self.m[layer][0], (int, float)):
+                        # First step: init moments on GPU
+                        self.m[layer][0] = g0 * (1 - self.beta1)
+                        self.m[layer][1] = g1 * (1 - self.beta1)
+                        self.v[layer][0] = (g0 * g0) * (1 - self.beta2)
+                        self.v[layer][1] = (g1 * g1) * (1 - self.beta2)
+                    else:
+                        self.m[layer][0] = self.m[layer][0] * self.beta1 + g0 * (1 - self.beta1)
+                        self.m[layer][1] = self.m[layer][1] * self.beta1 + g1 * (1 - self.beta1)
+                        self.v[layer][0] = self.v[layer][0] * self.beta2 + (g0 * g0) * (1 - self.beta2)
+                        self.v[layer][1] = self.v[layer][1] * self.beta2 + (g1 * g1) * (1 - self.beta2)
 
-                self.v[layer][0] = self.beta2 * self.v[layer][0] + (1 - self.beta2) * (g0 ** 2)
-                self.v[layer][1] = self.beta2 * self.v[layer][1] + (1 - self.beta2) * (g1 ** 2)
+                    bc1 = 1 - self.beta1 ** self.t
+                    bc2 = 1 - self.beta2 ** self.t
 
-                m_hat0 = self.m[layer][0] / (1 - self.beta1 ** self.t)
-                m_hat1 = self.m[layer][1] / (1 - self.beta1 ** self.t)
+                    m_hat0 = self.m[layer][0] * (1.0 / bc1)
+                    m_hat1 = self.m[layer][1] * (1.0 / bc1)
+                    v_hat0 = self.v[layer][0] * (1.0 / bc2)
+                    v_hat1 = self.v[layer][1] * (1.0 / bc2)
 
-                v_hat0 = self.v[layer][0] / (1 - self.beta2 ** self.t)
-                v_hat1 = self.v[layer][1] / (1 - self.beta2 ** self.t)
+                    update_w = m_hat0 * self.lr * (v_hat0.sqrt() + self.eps) ** (-1)
+                    update_b = m_hat1 * self.lr * (v_hat1.sqrt() + self.eps) ** (-1)
 
-                update_w = (self.lr * m_hat0) / (v_hat0 ** 0.5 + self.eps)
-                update_b = (self.lr * m_hat1) / (v_hat1 ** 0.5 + self.eps)
+                    layer.update_params(update_w, update_b)
+                else:
+                    # CPU path
+                    g0 = _to_host(g0)
+                    g1 = _to_host(g1)
 
-                layer.update_params(update_w, update_b)
+                    self.m[layer][0] = self.beta1 * self.m[layer][0] + (1 - self.beta1) * g0
+                    self.m[layer][1] = self.beta1 * self.m[layer][1] + (1 - self.beta1) * g1
+
+                    self.v[layer][0] = self.beta2 * self.v[layer][0] + (1 - self.beta2) * (g0 ** 2)
+                    self.v[layer][1] = self.beta2 * self.v[layer][1] + (1 - self.beta2) * (g1 ** 2)
+
+                    m_hat0 = self.m[layer][0] / (1 - self.beta1 ** self.t)
+                    m_hat1 = self.m[layer][1] / (1 - self.beta1 ** self.t)
+
+                    v_hat0 = self.v[layer][0] / (1 - self.beta2 ** self.t)
+                    v_hat1 = self.v[layer][1] / (1 - self.beta2 ** self.t)
+
+                    update_w = (self.lr * m_hat0) / (v_hat0 ** 0.5 + self.eps)
+                    update_b = (self.lr * m_hat1) / (v_hat1 ** 0.5 + self.eps)
+
+                    layer.update_params(update_w, update_b)
 
         self.t += 1

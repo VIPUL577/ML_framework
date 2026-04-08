@@ -7,6 +7,32 @@ import seera_cuda
 # so hence depending upon the type this will significatly ease the the architecture.
 # Fun
 class cuten:
+    # ── Broadcasting helpers ─────────────────────────────────────────
+    @staticmethod
+    def _pad_shape_4d(shape):
+        """Left-pad shape to 4 dimensions with 1s."""
+        s = tuple(shape)
+        while len(s) < 4:
+            s = (1,) + s
+        return s
+
+    @staticmethod
+    def _broadcast_out_shape(a_shape, b_shape):
+        """Compute the broadcast output shape (NumPy rules)."""
+        ndim = max(len(a_shape), len(b_shape))
+        a_pad = (1,) * (ndim - len(a_shape)) + tuple(a_shape)
+        b_pad = (1,) * (ndim - len(b_shape)) + tuple(b_shape)
+        out = []
+        for a, b in zip(a_pad, b_pad):
+            if a == b:
+                out.append(a)
+            elif a == 1:
+                out.append(b)
+            elif b == 1:
+                out.append(a)
+            else:
+                raise ValueError(f"[cuTen]: Shapes {a_shape} and {b_shape} not broadcastable")
+        return tuple(out)
     def __init__(self, data, dtype="float32"):
         self.supported_types = ["float32","int32","int16"]
         self.fill_alloc_dtype = {
@@ -38,7 +64,7 @@ class cuten:
             
 
     def _allocate_convert_to_gpu(self,data:np.ndarray, shape, size, dtype):
-        print(f"the dtype is {dtype}")
+        # print(f"the dtype is {dtype}")
         self.main_ptr = self.fill_alloc_dtype[dtype](data)
         self.shape = shape
         self.size = size
@@ -101,11 +127,25 @@ class cuten:
 
     def __add__(self, other):
         if isinstance(other,cuten):
-            if self.shape != other.shape:
-                raise ValueError(f"[cuTen]: Should be of same shape for Elements Add one is of {self.shape} and {other.shape}")
-            c= cuten.ones_like(self)
-            seera_cuda.cuda_elemadd(self.main_ptr,other.main_ptr, c.main_ptr, self.size)
-            return c
+            if self.shape == other.shape:
+                # Fast path: same shape, use element-wise kernel
+                c = cuten.ones_like(self)
+                seera_cuda.cuda_elemadd(self.main_ptr, other.main_ptr, c.main_ptr, self.size)
+                return c
+            # Broadcast path
+            out_shape = cuten._broadcast_out_shape(self.shape, other.shape)
+            a4 = cuten._pad_shape_4d(self.shape)
+            b4 = cuten._pad_shape_4d(other.shape)
+            out_size = seera_cuda.compute_out_size_4d(*a4, *b4)
+            if out_size < 0:
+                raise ValueError(f"[cuTen]: Shapes {self.shape} and {other.shape} not broadcastable")
+            out_ptr = seera_cuda.cuda_malloc_f32(out_size)
+            seera_cuda.broadcast_add_4d(self.main_ptr, other.main_ptr, out_ptr, *a4, *b4)
+            result = cuten(data=None, dtype="float32")
+            result.main_ptr = out_ptr
+            result.shape = out_shape
+            result.size = out_size
+            return result
             
         if isinstance(other,int) or isinstance(other,float):
             seera_cuda.cuda_scaler_add_f(self.main_ptr, float(other),self.size )
@@ -115,12 +155,25 @@ class cuten:
     def __mul__(self, other):
     
         if isinstance(other,cuten):
-            if self.shape != other.shape:
-                raise ValueError(f"[cuTen]: Should be of same shape for Elements Multiplication Add one is of {self.shape} and {other.shape}")
-
-            c= cuten.ones_like(self)
-            seera_cuda.cuda_elemmult(self.main_ptr,other.main_ptr, c.main_ptr, self.size)
-            return c
+            if self.shape == other.shape:
+                # Fast path: same shape, use element-wise kernel
+                c = cuten.ones_like(self)
+                seera_cuda.cuda_elemmult(self.main_ptr, other.main_ptr, c.main_ptr, self.size)
+                return c
+            # Broadcast path
+            out_shape = cuten._broadcast_out_shape(self.shape, other.shape)
+            a4 = cuten._pad_shape_4d(self.shape)
+            b4 = cuten._pad_shape_4d(other.shape)
+            out_size = seera_cuda.compute_out_size_4d(*a4, *b4)
+            if out_size < 0:
+                raise ValueError(f"[cuTen]: Shapes {self.shape} and {other.shape} not broadcastable")
+            out_ptr = seera_cuda.cuda_malloc_f32(out_size)
+            seera_cuda.broadcast_mul_4d(self.main_ptr, other.main_ptr, out_ptr, *a4, *b4)
+            result = cuten(data=None, dtype="float32")
+            result.main_ptr = out_ptr
+            result.shape = out_shape
+            result.size = out_size
+            return result
             
         if isinstance(other,int) or isinstance(other,float):
             seera_cuda.cuda_scaler_multiply_f(self.main_ptr, float(other),self.size )

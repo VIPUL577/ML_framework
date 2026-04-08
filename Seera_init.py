@@ -10,6 +10,13 @@ except ImportError:
     import warnings
     warnings.warn("C++ engine not found. Using NumPy fallback. Run: python build_engine.py")
 
+# ── Try importing CUDA engine ──
+try:
+    import seera_cuda
+    _USE_CUDA = True
+except ImportError:
+    _USE_CUDA = False
+
 
 def _where(value):
     if isinstance(value, cuten):
@@ -17,24 +24,31 @@ def _where(value):
     return np
 
 
+def _is_gpu(value):
+    return isinstance(value, cuten)
+
+
 # ─────────────────────────────────────────────────────────────
 # Node: gradient info and children in the computation graph
 # ─────────────────────────────────────────────────────────────
 class node:
-    def __init__(self, child_grad, out=0,dtype="float32",device = "cpu"):
+    def __init__(self, child_grad, out=0, dtype="float32", device="cpu"):
         self.out = out
-        self.child_grad = np.array(child_grad, dtype=dtype)
-            
-        if isinstance(child_grad, list) and len(child_grad) > 0 and len(child_grad[0]) > 0:
-            self.cp = np.zeros_like(child_grad[0][0])
-        else:
-            self.cp = 0
-        self.child = []
-        
         if device == "cuda":
-            self.value = cuten(data=self.child_grad,dtype=dtype)
-            self.cp = cuten(np.zeros_like(child_grad[0][0]))
-            
+            # child_grad is already a list-of-lists of cuten objects
+            self.child_grad = np.array(child_grad, dtype=object)
+            if isinstance(child_grad, list) and len(child_grad) > 0 and len(child_grad[0]) > 0:
+                ref = child_grad[0][0]
+                self.cp = cuten.zeros_like(ref) if isinstance(ref, cuten) else 0
+            else:
+                self.cp = 0
+        else:
+            self.child_grad = np.array(child_grad, dtype=dtype)
+            if isinstance(child_grad, list) and len(child_grad) > 0 and len(child_grad[0]) > 0:
+                self.cp = np.zeros_like(child_grad[0][0])
+            else:
+                self.cp = 0
+        self.child = []
 
     @property
     def grad(self):
@@ -46,15 +60,31 @@ class node:
 # Batch dim is axis 0:  Dense(N, features)  Conv(N, C, H, W)
 # ─────────────────────────────────────────────────────────────
 class tensor(node):
-    def __init__(self, value, dtype="float32", is_leaf=False, device = "cpu"):
-        self.value = np.ascontiguousarray(np.array(value).astype(dtype))
-        if device == "cuda":
-            self.value = cuten(data=self.value,dtype=dtype)
-        child_grad = (
-            [np.zeros_like(self.value), np.zeros_like(self.value)],
-            [np.zeros_like(self.value), np.zeros_like(self.value)],
-        )
-        self.node = node(child_grad,device=device)
+    def __init__(self, value, dtype="float32", is_leaf=False, device="cpu"):
+        # If value is already a cuten, keep it as-is (GPU tensor)
+        if isinstance(value, cuten):
+            self.value = value
+            device = "cuda"
+        else:
+            self.value = np.ascontiguousarray(np.array(value).astype(dtype))
+            if device == "cuda":
+                self.value = cuten(data=self.value, dtype=dtype)
+
+        bk = _where(self.value)
+        if bk is cuten:
+            z1 = cuten.zeros_like(self.value)
+            z2 = cuten.zeros_like(self.value)
+            z3 = cuten.zeros_like(self.value)
+            z4 = cuten.zeros_like(self.value)
+            child_grad = [[z1, z2], [z3, z4]]
+            self.node = node(child_grad, device="cuda")
+        else:
+            child_grad = (
+                [np.zeros_like(self.value), np.zeros_like(self.value)],
+                [np.zeros_like(self.value), np.zeros_like(self.value)],
+            )
+            self.node = node(child_grad, device="cpu")
+
         self.is_leaf = is_leaf
         self.dtype = dtype
 
@@ -75,43 +105,71 @@ class tensor(node):
 
     # ─── Element-wise ops ────────────────────────────────────
     def __add__(self, other):
+        gpu = _is_gpu(self.value)
+
         if isinstance(other, (int, float)):
-            other = tensor(other * np.ones_like(self.value))
+            if gpu:
+                other = tensor(cuten.ones_like(self.value) * other)
+            else:
+                other = tensor(other * np.ones_like(self.value))
         elif not isinstance(other, tensor):
             other = tensor(other)
 
-        if _USE_CPP and self.value.shape == other.value.shape:
-            result = seera_cpp.add(self.value, other.value)
-        else:
+        if gpu:
             result = self.value + other.value
+            out = tensor(result)
+            child_grad = [
+                [self.value, cuten.ones_like(self.value)],
+                [other.value, cuten.ones_like(other.value)],
+            ]
+            out.node.child_grad = np.array(child_grad, dtype=object)
+        else:
+            if _USE_CPP and self.value.shape == other.value.shape:
+                result = seera_cpp.add(self.value, other.value)
+            else:
+                result = self.value + other.value
+            out = tensor(result)
+            child_grad = [
+                [self.value, np.ones_like(self.value)],
+                [other.value, np.ones_like(other.value)],
+            ]
+            out.node.child_grad = np.array(child_grad, dtype=object)
 
-        out = tensor(result)
-        child_grad = [
-            [self.value, np.ones_like(self.value)],
-            [other.value, np.ones_like(other.value)],
-        ]
-        out.node.child_grad = np.array(child_grad, dtype=object)
         out.node.out = out.value
         out.node.child = [self, other]
         return out
 
     def __mul__(self, other):
+        gpu = _is_gpu(self.value)
+
         if isinstance(other, (int, float)):
-            other = tensor(other * np.ones_like(self.value))
+            if gpu:
+                other = tensor(cuten.ones_like(self.value) * other)
+            else:
+                other = tensor(other * np.ones_like(self.value))
         elif not isinstance(other, tensor):
             other = tensor(other)
 
-        if _USE_CPP and self.value.shape == other.value.shape:
-            result = seera_cpp.mul(self.value, other.value)
-        else:
+        if gpu:
             result = self.value * other.value
+            out = tensor(result)
+            child_grad = [
+                [self.value, other.value],
+                [other.value, self.value],
+            ]
+            out.node.child_grad = np.array(child_grad, dtype=object)
+        else:
+            if _USE_CPP and self.value.shape == other.value.shape:
+                result = seera_cpp.mul(self.value, other.value)
+            else:
+                result = self.value * other.value
+            out = tensor(result)
+            child_grad = [
+                [self.value, other.value],
+                [other.value, self.value],
+            ]
+            out.node.child_grad = np.array(child_grad, dtype=object)
 
-        out = tensor(result)
-        child_grad = [
-            [self.value, other.value],
-            [other.value, self.value],
-        ]
-        out.node.child_grad = np.array(child_grad, dtype=object)
         out.node.out = out.value
         out.node.child = [self, other]
         return out
@@ -119,14 +177,33 @@ class tensor(node):
     def __pow__(self, other):
         if not isinstance(other, float):
             other = float(other)
-        if _USE_CPP:
-            out_val, gradient = seera_cpp.pow_act(
-                np.ascontiguousarray(self.value, dtype=np.float32), other
-            )
+        gpu = _is_gpu(self.value)
+
+        if gpu:
+            out_ptr = seera_cuda.cuda_malloc_f32(self.value.size)
+            grad_ptr = seera_cuda.cuda_malloc_f32(self.value.size)
+            seera_cuda.cuda_pow_fwd(self.value.main_ptr, other, out_ptr, grad_ptr, self.value.size)
+
+            out_val = cuten(data=None, dtype="float32")
+            out_val.main_ptr = out_ptr
+            out_val.shape = self.value.shape
+            out_val.size = self.value.size
+
+            grad_val = cuten(data=None, dtype="float32")
+            grad_val.main_ptr = grad_ptr
+            grad_val.shape = self.value.shape
+            grad_val.size = self.value.size
+
+            return self._unary(out_val, grad_val)
         else:
-            out_val = self.value ** other
-            gradient = other * (self.value ** (other - 1))
-        return self._unary(out_val, gradient)
+            if _USE_CPP:
+                out_val, gradient = seera_cpp.pow_act(
+                    np.ascontiguousarray(self.value, dtype=np.float32), other
+                )
+            else:
+                out_val = self.value ** other
+                gradient = other * (self.value ** (other - 1))
+            return self._unary(out_val, gradient)
 
     def __neg__(self):    return self * (-1)
     def __sub__(self, other): return self + (-other)
@@ -138,18 +215,51 @@ class tensor(node):
 
     # ─── Unary op helper ─────────────────────────────────────
     def _unary(self, fwd_val, gradient):
+        gpu = _is_gpu(self.value)
         out = tensor(fwd_val)
-        child_grad = [
-            [self.value, gradient],
-            [np.full_like(self.value, np.nan), np.full_like(gradient, np.nan)],
-        ]
-        out.node.child_grad = np.array(child_grad, dtype=object)
+        if gpu:
+            nan_like = cuten.zeros_like(self.value)  # placeholder, won't be used
+            nan_grad = cuten.zeros_like(self.value)
+            child_grad = [
+                [self.value, gradient],
+                [nan_like, nan_grad],
+            ]
+            out.node.child_grad = np.array(child_grad, dtype=object)
+        else:
+            child_grad = [
+                [self.value, gradient],
+                [np.full_like(self.value, np.nan), np.full_like(gradient, np.nan)],
+            ]
+            out.node.child_grad = np.array(child_grad, dtype=object)
         out.node.out = out.value
         out.node.child = [self]
         return out
 
-    # ─── Activations (C++ accelerated) ───────────────────────
+    # ─── GPU unary activation helper ─────────────────────────
+    def _gpu_activation(self, kernel_fn):
+        """Run a CUDA unary activation that fills (out, grad).
+        Returns (out_cuten, grad_cuten)."""
+        out_ptr = seera_cuda.cuda_malloc_f32(self.value.size)
+        grad_ptr = seera_cuda.cuda_malloc_f32(self.value.size)
+        kernel_fn(self.value.main_ptr, out_ptr, grad_ptr, self.value.size)
+
+        out_val = cuten(data=None, dtype="float32")
+        out_val.main_ptr = out_ptr
+        out_val.shape = self.value.shape
+        out_val.size = self.value.size
+
+        grad_val = cuten(data=None, dtype="float32")
+        grad_val.main_ptr = grad_ptr
+        grad_val.shape = self.value.shape
+        grad_val.size = self.value.size
+
+        return out_val, grad_val
+
+    # ─── Activations (C++ / CUDA accelerated) ───────────────
     def relu(self):
+        if _is_gpu(self.value):
+            o, g = self._gpu_activation(seera_cuda.cuda_relu_fwd)
+            return self._unary(o, g)
         if _USE_CPP:
             o, g = seera_cpp.relu(np.ascontiguousarray(self.value, dtype=np.float32))
         else:
@@ -158,6 +268,9 @@ class tensor(node):
         return self._unary(o, g)
 
     def sigmoid(self):
+        if _is_gpu(self.value):
+            o, g = self._gpu_activation(seera_cuda.cuda_sigmoid_fwd)
+            return self._unary(o, g)
         if _USE_CPP:
             o, g = seera_cpp.sigmoid(np.ascontiguousarray(self.value, dtype=np.float32))
         else:
@@ -166,6 +279,9 @@ class tensor(node):
         return self._unary(o, g)
 
     def tanh(self):
+        if _is_gpu(self.value):
+            o, g = self._gpu_activation(seera_cuda.cuda_tanh_fwd)
+            return self._unary(o, g)
         if _USE_CPP:
             o, g = seera_cpp.tanh_act(np.ascontiguousarray(self.value, dtype=np.float32))
         else:
@@ -174,6 +290,9 @@ class tensor(node):
         return self._unary(o, g)
 
     def log(self):
+        if _is_gpu(self.value):
+            o, g = self._gpu_activation(seera_cuda.cuda_log_fwd)
+            return self._unary(o, g)
         if _USE_CPP:
             o, g = seera_cpp.log_act(np.ascontiguousarray(self.value, dtype=np.float32))
         else:
@@ -181,6 +300,9 @@ class tensor(node):
         return self._unary(o, g)
 
     def exp(self):
+        if _is_gpu(self.value):
+            o, g = self._gpu_activation(seera_cuda.cuda_exp_fwd)
+            return self._unary(o, g)
         if _USE_CPP:
             o, g = seera_cpp.exp_act(np.ascontiguousarray(self.value, dtype=np.float32))
         else:
@@ -189,6 +311,9 @@ class tensor(node):
         return self._unary(o, g)
 
     def abs(self):
+        if _is_gpu(self.value):
+            o, g = self._gpu_activation(seera_cuda.cuda_abs_fwd)
+            return self._unary(o, g)
         if _USE_CPP:
             o, g = seera_cpp.abs_act(np.ascontiguousarray(self.value, dtype=np.float32))
         else:
@@ -196,6 +321,9 @@ class tensor(node):
         return self._unary(o, g)
 
     def sqrt(self):
+        if _is_gpu(self.value):
+            o, g = self._gpu_activation(seera_cuda.cuda_sqrt_fwd)
+            return self._unary(o, g)
         if _USE_CPP:
             o, g = seera_cpp.sqrt_act(np.ascontiguousarray(self.value, dtype=np.float32))
         else:
@@ -204,6 +332,21 @@ class tensor(node):
         return self._unary(o, g)
 
     def clip(self, min_val, max_val):
+        if _is_gpu(self.value):
+            out_ptr = seera_cuda.cuda_malloc_f32(self.value.size)
+            grad_ptr = seera_cuda.cuda_malloc_f32(self.value.size)
+            seera_cuda.cuda_clip_fwd(self.value.main_ptr, float(min_val), float(max_val),
+                                     out_ptr, grad_ptr, self.value.size)
+            out_val = cuten(data=None, dtype="float32")
+            out_val.main_ptr = out_ptr
+            out_val.shape = self.value.shape
+            out_val.size = self.value.size
+
+            grad_val = cuten(data=None, dtype="float32")
+            grad_val.main_ptr = grad_ptr
+            grad_val.shape = self.value.shape
+            grad_val.size = self.value.size
+            return self._unary(out_val, grad_val)
         if _USE_CPP:
             o, g = seera_cpp.clip_act(
                 np.ascontiguousarray(self.value, dtype=np.float32), min_val, max_val
@@ -224,8 +367,22 @@ class tensor(node):
     def tan(self):
         return self._unary(np.tan(self.value), 1 / (np.cos(self.value) ** 2))
 
-    # ─── Softmax (C++ accelerated, VJP-based) ────────────────
+    # ─── Softmax (C++ / CUDA accelerated, VJP-based) ─────────
     def softmax(self, axis=-1):
+        gpu = _is_gpu(self.value)
+
+        if gpu:
+            s = self.value.softmax()  # cuten.softmax()
+            out = tensor(s)
+            out.isoftmax = True
+            child_grad = np.empty((1, 2), dtype=object)
+            child_grad[0, 0] = self.value
+            child_grad[0, 1] = s  # softmax output for VJP backward
+            out.node.child_grad = child_grad
+            out.node.out = out.value
+            out.node.child = [self]
+            return out
+
         x = np.ascontiguousarray(self.value, dtype=np.float32)
         if _USE_CPP and x.ndim >= 2:
             s = seera_cpp.softmax(x)
@@ -244,8 +401,24 @@ class tensor(node):
         out.node.child = [self]
         return out
 
-    # ─── Matmul (C++ accelerated via OpenBLAS) ───────────────
+    # ─── Matmul (C++ / CUDA accelerated) ─────────────────────
     def matmul(self, other):
+        gpu = _is_gpu(self.value)
+
+        if gpu:
+            result = self.value.matmul(other.value)
+            out = tensor(result)
+            out.node.child = [self, other]
+            out.matm = True
+            out.node.out = out.value
+            child_grad_obj = np.empty((2, 2), dtype=object)
+            child_grad_obj[0, 0] = self.value
+            child_grad_obj[0, 1] = other.value
+            child_grad_obj[1, 0] = other.value
+            child_grad_obj[1, 1] = self.value
+            out.node.child_grad = child_grad_obj
+            return out
+
         a = np.ascontiguousarray(self.value, dtype=np.float32)
         b = np.ascontiguousarray(other.value, dtype=np.float32)
         if _USE_CPP and a.ndim == 2 and b.ndim == 2:
@@ -267,6 +440,31 @@ class tensor(node):
 
     # ─── Reductions ──────────────────────────────────────────
     def sum(self, axis=None, keepdims=False):
+        gpu = _is_gpu(self.value)
+
+        if gpu:
+            if axis is None:
+                # Reduce all dimensions sequentially (last to first)
+                result = self
+                for dim in reversed(range(len(self.value.shape))):
+                    result = result.sum(axis=dim)
+                return result
+            s = self.value.sum(dim=axis)
+            out = tensor(s)
+            out.node.out = out.value
+            out.node.child = [self]
+            out.ireduction = {
+                "input_shape": self.value.shape,
+                "axis": axis,
+                "keepdims": keepdims,
+                "scale": 1.0,
+                "gpu": True,
+                "dimarr": np.array(self.value.shape, dtype=np.int32),
+                "ndims": len(self.value.shape),
+                "dim": axis,
+            }
+            return out
+
         s = np.sum(self.value, axis=axis, keepdims=keepdims)
         out = tensor(s)
         out.node.out = out.value
@@ -280,6 +478,31 @@ class tensor(node):
         return out
 
     def mean(self, axis=None, keepdims=False):
+        gpu = _is_gpu(self.value)
+
+        if gpu:
+            if axis is None:
+                # mean over all elements = sum_all / total_size
+                total = self.value.size
+                s = self.sum()  # reduces to scalar
+                return s * (1.0 / total)
+            s = self.value.mean(dim=axis)
+            out = tensor(s)
+            out.node.child = [self]
+            out.node.out = out.value
+            n = self.value.shape[axis]
+            out.ireduction = {
+                "input_shape": self.value.shape,
+                "axis": axis,
+                "keepdims": keepdims,
+                "scale": 1.0 / n,
+                "gpu": True,
+                "dimarr": np.array(self.value.shape, dtype=np.int32),
+                "ndims": len(self.value.shape),
+                "dim": axis,
+            }
+            return out
+
         out = tensor(np.mean(self.value, axis=axis, keepdims=keepdims))
         out.node.child = [self]
         out.node.out = out.value
@@ -300,6 +523,28 @@ class tensor(node):
         return out
 
     def max(self, axis=None, keepdims=False):
+        gpu = _is_gpu(self.value)
+
+        if gpu and axis is not None:
+            out_val = self.value.max(dim=axis)
+            out = tensor(out_val)
+            out.node.child = [self]
+            out.node.out = out.value
+            out.ireduction = {
+                "input_shape": self.value.shape,
+                "axis": axis,
+                "keepdims": keepdims,
+                "scale": 1.0,
+                "gpu": True,
+                "type": "max",
+                "fwdInput": self.value,
+                "fwdOutput": out_val,
+                "dimarr": np.array(self.value.shape, dtype=np.int32),
+                "ndims": len(self.value.shape),
+                "dim": axis,
+            }
+            return out
+
         out_value = np.max(self.value, axis=axis, keepdims=keepdims)
         out = tensor(out_value)
         out.node.child = [self]
@@ -318,6 +563,28 @@ class tensor(node):
         return out
 
     def min(self, axis=None, keepdims=False):
+        gpu = _is_gpu(self.value)
+
+        if gpu and axis is not None:
+            out_val = self.value.min(dim=axis)
+            out = tensor(out_val)
+            out.node.child = [self]
+            out.node.out = out.value
+            out.ireduction = {
+                "input_shape": self.value.shape,
+                "axis": axis,
+                "keepdims": keepdims,
+                "scale": 1.0,
+                "gpu": True,
+                "type": "min",
+                "fwdInput": self.value,
+                "fwdOutput": out_val,
+                "dimarr": np.array(self.value.shape, dtype=np.int32),
+                "ndims": len(self.value.shape),
+                "dim": axis,
+            }
+            return out
+
         out_value = np.min(self.value, axis=axis, keepdims=keepdims)
         out = tensor(out_value)
         out.node.child = [self]
@@ -354,9 +621,20 @@ class tensor(node):
         return self._unary(np.expand_dims(self.value, axis=axis), np.ones_like(self.value))
 
     def flatten(self):
+        gpu = _is_gpu(self.value)
         original_shape = self.value.shape
         N = original_shape[0]
-        out = tensor(self.value.reshape(N, -1))
+
+        if gpu:
+            # cuten flatten: reshape in place then wrap as new tensor
+            flat = cuten(data=None, dtype="float32")
+            flat.main_ptr = self.value.main_ptr
+            flat.size = self.value.size
+            flat.shape = (N, int(self.value.size / N))
+            out = tensor(flat)
+        else:
+            out = tensor(self.value.reshape(N, -1))
+
         out.flctx = original_shape
         out.node.child = [self]
         return out
@@ -376,12 +654,9 @@ class tensor(node):
         out.node.out = out.value
         return out
 
-    # ─── Conv2D forward (C++ accelerated) ────────────────────
+    # ─── Conv2D forward (C++ / CUDA accelerated) ─────────────
     def conv2d(self, W, stride=1, padding=0):
-        x = np.ascontiguousarray(self.value, dtype=np.float32)
-        w = np.ascontiguousarray(W.value, dtype=np.float32)
-        if x.ndim == 3:
-            x = x[np.newaxis]
+        gpu = _is_gpu(self.value)
 
         # Normalize stride/padding to (h, w) tuples
         if isinstance(stride, int):
@@ -392,6 +667,20 @@ class tensor(node):
             padh, padw = padding, padding
         else:
             padh, padw = padding
+
+        if gpu:
+            result = self.value.conv2d(W.value, strideh=strideh, stridew=stridew,
+                                       padh=padh, padw=padw)
+            out = tensor(result)
+            out.iconv2d = (True, strideh, stridew, padh, padw)
+            out.node.out = out.value
+            out.node.child = [self, W]
+            return out
+
+        x = np.ascontiguousarray(self.value, dtype=np.float32)
+        w = np.ascontiguousarray(W.value, dtype=np.float32)
+        if x.ndim == 3:
+            x = x[np.newaxis]
 
         if _USE_CPP:
             out_val = seera_cpp.conv2d_forward(x, w, strideh, stridew, padh, padw)
@@ -410,14 +699,12 @@ class tensor(node):
         out.node.child = [self, W]
         return out
 
-    # ─── MaxPool2D forward (C++ accelerated) ─────────────────
+    # ─── MaxPool2D forward (C++ / CUDA accelerated) ──────────
     def maxpool2d(self, kernelsize, stride=1, padding=0):
         if not isinstance(kernelsize, tuple):
             raise ValueError("kernelsize should be a tuple (height, width)")
         KH, KW = kernelsize
-        img = np.ascontiguousarray(self.value, dtype=np.float32)
-        if img.ndim == 3:
-            img = img[np.newaxis]
+        gpu = _is_gpu(self.value)
 
         # Normalize stride/padding to (h, w) tuples
         if isinstance(stride, int):
@@ -428,6 +715,19 @@ class tensor(node):
             padh, padw = padding, padding
         else:
             padh, padw = padding
+
+        if gpu:
+            result, mask = self.value.maxpool2d(KH, KW, strideh=strideh, stridew=stridew,
+                                                 padh=padh, padw=padw)
+            out = tensor(result)
+            out.mpctx = (True, mask, self.value.shape, kernelsize, strideh, stridew, padh, padw)
+            out.node.out = out.value
+            out.node.child = [self]
+            return out
+
+        img = np.ascontiguousarray(self.value, dtype=np.float32)
+        if img.ndim == 3:
+            img = img[np.newaxis]
 
         if _USE_CPP:
             out_val, mask = seera_cpp.maxpool2d_forward(img, KH, KW, strideh, stridew, padh, padw)
@@ -449,6 +749,21 @@ class tensor(node):
 
     # ─── Concatenate ─────────────────────────────────────────
     def concatenete(self, other):
+        gpu = _is_gpu(self.value)
+
+        if gpu:
+            if len(self.value.shape) >= 3 and len(other.value.shape) >= 3:
+                result = self.value.concatenate2D(other.value)
+                out = tensor(result)
+                out.iconcatenete = self.value.shape[1]
+            else:
+                result = self.value.concatenate1D(other.value)
+                out = tensor(result)
+                out.iconcatenete = self.value.shape[1]
+            out.node.child = [self, other]
+            out.node.out = out.value
+            return out
+
         if self.value.ndim >= 3 and other.value.ndim >= 3:
             out = tensor(np.concatenate([self.value, other.value], axis=1))
             out.iconcatenete = self.value.shape[1]
@@ -459,12 +774,22 @@ class tensor(node):
         out.node.out = out.value
         return out
 
-    # ─── Unpool2D Nearest (C++ accelerated) ──────────────────
+    # ─── Unpool2D Nearest (C++ / CUDA accelerated) ───────────
     def Unpool2Dnearest(self, size):
+        gpu = _is_gpu(self.value)
+        sw, sh = size
+
+        if gpu:
+            result = self.value.unpool(sh, sw)
+            out = tensor(result)
+            out.node.child = [self]
+            out.node.out = out.value
+            out.unpoolctx = (True, self.value.shape, size)
+            return out
+
         x = np.ascontiguousarray(self.value, dtype=np.float32)
         if x.ndim == 3:
             x = x[np.newaxis]
-        sw, sh = size
 
         if _USE_CPP:
             x_up = seera_cpp.unpooling_forward(x, sh, sw)
@@ -477,12 +802,9 @@ class tensor(node):
         out.unpoolctx = (True, self.value.shape, size)
         return out
 
-    # ─── ConvTranspose2D forward (C++ accelerated) ───────────
+    # ─── ConvTranspose2D forward (C++ / CUDA accelerated) ────
     def conv_transpose2d(self, W, stride=1, padding=0):
-        x = np.ascontiguousarray(self.value, dtype=np.float32)
-        w = np.ascontiguousarray(W.value, dtype=np.float32)
-        if x.ndim == 3:
-            x = x[np.newaxis]
+        gpu = _is_gpu(self.value)
 
         # Normalize stride/padding to (h, w) tuples
         if isinstance(stride, int):
@@ -493,6 +815,20 @@ class tensor(node):
             padh, padw = padding, padding
         else:
             padh, padw = padding
+
+        if gpu:
+            result = self.value.conv2d_transpose(W.value, strideh=strideh, stridew=stridew,
+                                                  padh=padh, padw=padw)
+            out = tensor(result)
+            out.convTrans = (True, strideh, stridew, padh, padw)
+            out.node.out = out.value
+            out.node.child = [self, W]
+            return out
+
+        x = np.ascontiguousarray(self.value, dtype=np.float32)
+        w = np.ascontiguousarray(W.value, dtype=np.float32)
+        if x.ndim == 3:
+            x = x[np.newaxis]
 
         if _USE_CPP:
             out_val = seera_cpp.conv_transpose2d_forward(x, w, strideh, stridew, padh, padw)
@@ -519,6 +855,7 @@ class tensor(node):
         return out
 
     # ─── BatchNorm forward (C++ accelerated) ─────────────────
+    # NOTE: BatchNorm backward is NOT GPU-accelerated (left as-is)
     def batchnorm(self, gamma, beta, running_mean, running_var,
                   training=True, momentum=0.1, eps=1e-5, mode="1d"):
         x = np.ascontiguousarray(self.value, dtype=np.float32)
@@ -604,19 +941,27 @@ class tensor(node):
 
     # ─── Factory methods ─────────────────────────────────────
     @classmethod
-    def zeros(cls, shape, dtype="float32"):
+    def zeros(cls, shape, dtype="float32", device="cpu"):
+        if device == "cuda":
+            return cls(cuten.zeros(shape), dtype=dtype, is_leaf=True)
         return cls(np.zeros(shape), dtype=dtype, is_leaf=True)
 
     @classmethod
-    def ones(cls, shape, dtype="float32"):
+    def ones(cls, shape, dtype="float32", device="cpu"):
+        if device == "cuda":
+            return cls(cuten.ones(shape), dtype=dtype, is_leaf=True)
         return cls(np.ones(shape), dtype=dtype, is_leaf=True)
 
     @classmethod
-    def random(cls, shape, dtype="float32"):
+    def random(cls, shape, dtype="float32", device="cpu"):
+        if device == "cuda":
+            return cls(cuten(np.random.random(shape).astype(dtype)), dtype=dtype, is_leaf=True)
         return cls(np.random.random(shape), dtype=dtype, is_leaf=True)
 
     @classmethod
-    def randn(cls, *shape, dtype="float32"):
+    def randn(cls, *shape, dtype="float32", device="cpu"):
+        if device == "cuda":
+            return cls(cuten(np.random.randn(*shape).astype(dtype)), dtype=dtype, is_leaf=True)
         return cls(np.random.randn(*shape), dtype=dtype, is_leaf=True)
 
     @classmethod
@@ -637,12 +982,22 @@ class tensor(node):
         return tensor(self.value, dtype=self.dtype, is_leaf=True)
 
     def to_numpy(self):
+        if _is_gpu(self.value):
+            return self.value.to_host_f32().copy()
         return self.value.copy()
 
     def item(self):
+        if _is_gpu(self.value):
+            arr = self.value.to_host_f32()
+            if arr.size == 1:
+                return arr.item()
+            raise ValueError("Can only convert tensors with a single element to Python scalars")
         if self.value.size == 1:
             return self.value.item()
         raise ValueError("Can only convert tensors with a single element to Python scalars")
 
     def __repr__(self):
+        if _is_gpu(self.value):
+            arr = self.value.to_host_f32()
+            return f"Tensor(GPU)\n({arr},\nshape={self.value.shape})"
         return f"Tensor\n({self.value},\nshape={self.value.shape})"
