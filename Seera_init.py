@@ -484,6 +484,7 @@ class tensor(node):
             if axis is None:
                 # mean over all elements = sum_all / total_size
                 total = self.value.size
+                print(f"HELLO THERE {total}")
                 s = self.sum()  # reduces to scalar
                 return s * (1.0 / total)
             s = self.value.mean(dim=axis)

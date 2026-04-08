@@ -58,8 +58,8 @@ PYBIND11_MODULE(seera_cuda, m)
       m.def("cuda_free", [](uintptr_t ptr)
             { cudaFree(reinterpret_cast<void *>(ptr)); }, "Free GPU memory");
 
-      m.def("cuda_memcopy_devicetodevice", [](uintptr_t ptr1,uintptr_t ptr2, int num_elem)
-            { cudaMemcpy(reinterpret_cast<void *>(ptr1),reinterpret_cast<void *>(ptr2), num_elem*sizeof(float), cudaMemcpyDeviceToDevice); }, "for concatenate");
+      m.def("cuda_memcopy_devicetodevice", [](uintptr_t ptr1, uintptr_t ptr2, int num_elem)
+            { cudaMemcpy(reinterpret_cast<void *>(ptr1), reinterpret_cast<void *>(ptr2), num_elem * sizeof(float), cudaMemcpyDeviceToDevice); }, "for concatenate");
 
       // cuda_memset: zero-fill GPU memory
       m.def("cuda_memset", [](uintptr_t ptr, int value, size_t n_bytes)
@@ -444,21 +444,6 @@ PYBIND11_MODULE(seera_cuda, m)
                   ndims, dim,
                   const_cast<int *>(dimarr.data())); }, "Min reduction backward (GPU ptrs; dimarr: numpy)");
 
-      // ══════════════════════════════════════════════════════════════════
-      // cuTen Essentials
-      // ══════════════════════════════════════════════════════════════════
-      // m.def("cuda_scaler_multiply_h", [](uintptr_t arr, float k, int total_elements)
-      //       { seera_cuda::cuda_scaler_multiply_h(
-      //             reinterpret_cast<float *>(arr), k, total_elements); }, "Scalar multiply float (GPU ptr)");
-
-      // m.def("cuda_ones_h", [](uintptr_t arr, int total_elements)
-      //       { seera_cuda::cuda_ones_h(
-      //             reinterpret_cast<float *>(arr), total_elements); }, "Fill ones float (GPU ptr)");
-
-      // m.def("cuda_zeros_h", [](uintptr_t arr, int total_elements)
-      //       { seera_cuda::cuda_zeros_h(
-      //             reinterpret_cast<float *>(arr), total_elements); }, "Fill zeros float (GPU ptr)");
-
       m.def("cuda_scaler_multiply_f", [](uintptr_t arr, float k, int total_elements)
             { seera_cuda::cuda_scaler_multiply_f(
                   reinterpret_cast<float *>(arr), k, total_elements); }, "Scalar multiply float (GPU ptr)");
@@ -469,7 +454,7 @@ PYBIND11_MODULE(seera_cuda, m)
             {     float* ones; 
                   cudaMalloc(&ones, total_elements*sizeof(float));
                   seera_cuda::cuda_ones_f(ones, total_elements); 
-                  return reinterpret_cast<uintptr_t>(ones);}, "Fill ones float (GPU ptr)");
+                  return reinterpret_cast<uintptr_t>(ones); }, "Fill ones float (GPU ptr)");
 
       m.def("cuda_zeros_f", [](int total_elements)
             {     float* zeros; 
@@ -516,9 +501,7 @@ PYBIND11_MODULE(seera_cuda, m)
       // Broadcasting Ops (4-D)
       // ══════════════════════════════════════════════════════════════════
 
-      m.def("broadcast_add_4d", [](uintptr_t A, uintptr_t B, uintptr_t C,
-                                    int aN, int aC, int aH, int aW,
-                                    int bN, int bC, int bH, int bW)
+      m.def("broadcast_add_4d", [](uintptr_t A, uintptr_t B, uintptr_t C, int aN, int aC, int aH, int aW, int bN, int bC, int bH, int bW)
             { seera_cuda::broadcast_add_4d(
                   reinterpret_cast<const float *>(A),
                   reinterpret_cast<const float *>(B),
@@ -526,19 +509,11 @@ PYBIND11_MODULE(seera_cuda, m)
                   aN, aC, aH, aW,
                   bN, bC, bH, bW); }, "Broadcast add 4D (GPU ptrs)");
 
-      m.def("broadcast_mul_4d", [](uintptr_t A, uintptr_t B, uintptr_t C,
-                                    int aN, int aC, int aH, int aW,
-                                    int bN, int bC, int bH, int bW)
+      m.def("broadcast_mul_4d", [](uintptr_t A, uintptr_t B, uintptr_t C, int aN, int aC, int aH, int aW, int bN, int bC, int bH, int bW)
             { seera_cuda::broadcast_mul_4d(
                   reinterpret_cast<const float *>(A),
                   reinterpret_cast<const float *>(B),
                   reinterpret_cast<float *>(C),
                   aN, aC, aH, aW,
                   bN, bC, bH, bW); }, "Broadcast mul 4D (GPU ptrs)");
-
-      m.def("compute_out_size_4d", [](int aN, int aC, int aH, int aW,
-                                       int bN, int bC, int bH, int bW) -> int
-            { return seera_cuda::compute_out_size_4d(
-                  aN, aC, aH, aW,
-                  bN, bC, bH, bW); }, "Compute broadcast output size for 4D tensors");
 }

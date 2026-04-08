@@ -120,9 +120,6 @@ namespace seera_cuda
         int aN, int aC, int aH, int aW,
         int bN, int bC, int bH, int bW);
 
-    int compute_out_size_4d(
-        int aN, int aC, int aH, int aW,
-        int bN, int bC, int bH, int bW);
 }
 
 /*

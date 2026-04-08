@@ -200,14 +200,19 @@ namespace seera_cuda
   __global__ void Reductionsum_bwd(float *dOut, float *dA, int limit, int stride,
                                    float divisor)
   {
+
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
     int inner = tid % stride;
+
     int outer = tid / stride;
+
     int base = outer * limit + inner;
 
-    float grad = dOut[tid] / divisor;
+    float grad = dOut[tid];
 
     for (int i = 0; i < limit; i += stride)
+
     {
       dA[base + i] = grad;
     }
@@ -288,6 +293,7 @@ namespace seera_cuda
       else
         totalthreads *= dimarr[i];
     }
+
 
     stride = limit / dimarr[dim];
 

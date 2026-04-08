@@ -137,35 +137,6 @@ void broadcast_op_4d(
    Compute total output size (number of elements)
    Returns -1 if shapes are incompatible for broadcasting.
    ───────────────────────────────────────────────────────────── */
-int compute_out_size_4d(
-    int aN, int aC, int aH, int aW,
-    int bN, int bC, int bH, int bW)
-{
-    // Helper lambda to resolve broadcasting rules per dimension
-    auto resolve = [](int a, int b) -> int {
-        if (a == b) return a;
-        if (a == 1) return b;
-        if (b == 1) return a;
-        return -1; // Incompatible
-    };
-
-    int oN = resolve(aN, bN);
-    int oC = resolve(aC, bC);
-    int oH = resolve(aH, bH);
-    int oW = resolve(aW, bW);
-
-    // If any dimension is incompatible, the entire operation fails
-    if (oN == -1 || oC == -1 || oH == -1 || oW == -1) {
-        return -1; 
-    }
-
-    // Return the total size
-    return (int)oN * oC * oH * oW;
-}
-
-
-
-
 void broadcast_add_4d(
     const float* A, const float* B, float* C,
     int aN, int aC, int aH, int aW,

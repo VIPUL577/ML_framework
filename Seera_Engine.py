@@ -434,7 +434,6 @@ class autograd4nn:
         elif nodeg.ireduction is not None:
             ctx = nodeg.ireduction
             cp = nodeg.node.cp
-
             if ctx.get("gpu", False):
                 input_shape = ctx["input_shape"]
                 axis = ctx["axis"]
@@ -442,10 +441,7 @@ class autograd4nn:
                 dim = ctx["dim"]
                 dimarr = ctx["dimarr"]
                 
-                # Compute input size
-                in_size = 1
-                for d in input_shape:
-                    in_size *= d
+                input_shape, in_size, ndims, dim, dimarr = self._reduction_meta(dim,ndims,dimarr,input_shape)
 
                 rtype = ctx.get("type", None)
 
@@ -478,6 +474,7 @@ class autograd4nn:
                 elif ctx["scale"] == 1.0:
                     # sum backward
                     dA_ptr = seera_cuda.cuda_malloc_f32(in_size)
+                    
                     seera_cuda.cuda_sum_bwd(cp.main_ptr, dA_ptr, ndims, dim, dimarr)
                     dA = cuten(data=None, dtype="float32")
                     dA.main_ptr = dA_ptr
@@ -489,6 +486,7 @@ class autograd4nn:
                     # mean backward
                     dA_ptr = seera_cuda.cuda_malloc_f32(in_size)
                     seera_cuda.cuda_mean_bwd(cp.main_ptr, dA_ptr, ndims, dim, dimarr)
+                    
                     dA = cuten(data=None, dtype="float32")
                     dA.main_ptr = dA_ptr
                     dA.shape = input_shape
@@ -622,6 +620,25 @@ class autograd4nn:
             topo_order.append(nodeg)
         connect(self.hook)
         return reversed(topo_order)
+    
+    @staticmethod
+    def _reduction_meta( dim: int, ndims:int,dimarr,input_shape):
+        """Return (out_shape, out_size, ndims, dim, dimarr_numpy) for a
+        reduction that collapses *dim* from self.shape."""
+        if dim < 0:
+            dim = ndims + dim
+        if dim < 0 or dim >= ndims:
+            raise ValueError(f"[Engine]: dim {dim} out of range for shape {input_shape}")
+
+        out_shape = tuple(d for i, d in enumerate(input_shape) if i != dim)
+        if not out_shape:
+            out_shape = (1,)
+        out_size = 1
+        for d in out_shape:
+            out_size *= d
+
+        dimarr = np.array(input_shape, dtype=np.int32)
+        return out_shape, out_size, ndims, dim, dimarr
 
 
 # ─────────────────────────────────────────────────────────────

@@ -136,7 +136,11 @@ class cuten:
             out_shape = cuten._broadcast_out_shape(self.shape, other.shape)
             a4 = cuten._pad_shape_4d(self.shape)
             b4 = cuten._pad_shape_4d(other.shape)
-            out_size = seera_cuda.compute_out_size_4d(*a4, *b4)
+            print(f"shape{out_shape}")
+            out_size = 1
+            for i in out_shape:
+                out_size*=i
+            print(f"size{out_size}")
             if out_size < 0:
                 raise ValueError(f"[cuTen]: Shapes {self.shape} and {other.shape} not broadcastable")
             out_ptr = seera_cuda.cuda_malloc_f32(out_size)
@@ -164,7 +168,9 @@ class cuten:
             out_shape = cuten._broadcast_out_shape(self.shape, other.shape)
             a4 = cuten._pad_shape_4d(self.shape)
             b4 = cuten._pad_shape_4d(other.shape)
-            out_size = seera_cuda.compute_out_size_4d(*a4, *b4)
+            out_size = 1
+            for i in out_shape:
+                out_size*=i
             if out_size < 0:
                 raise ValueError(f"[cuTen]: Shapes {self.shape} and {other.shape} not broadcastable")
             out_ptr = seera_cuda.cuda_malloc_f32(out_size)
@@ -385,6 +391,8 @@ class cuten:
 
         dimarr = np.array(self.shape, dtype=np.int32)
         return out_shape, out_size, ndims, dim, dimarr
+    
+    
 
     # ==================================================================
     #  11) Sum  — reduction along a given dimension

@@ -661,6 +661,7 @@ class Sequential:
         output = None
         for layer in self.model:
             output = layer.forward()
+            # print(f"Layer {type(layer)} done")
         return output
 
     def predict(self, X):
@@ -733,12 +734,13 @@ class Sequential:
 
                 # Compute loss
                 loss = Loss(ypred, y_batch)
-
+                print(f"FORWARD DONE!! {loss}")
                 # For batch: take mean loss across batch for single scalar
                 if use_gpu:
                     # GPU: loss.value is cuten, check shape
                     if len(loss.value.shape) > 0 and loss.value.size > 1:
                         loss = loss.mean()
+                        print(f"FORWARD DONE2!! {loss}")
                     batch_loss = float(np.sum(loss.value.to_host_f32()))
                 else:
                     if loss.value.ndim > 0 and loss.value.size > 1:
@@ -750,7 +752,10 @@ class Sequential:
 
                 # Backward
                 self.zero_grad()
+                print(f"backward!")
+                
                 autograd4nn(loss)
+                print(f"backward2! {loss}")
 
                 # Optimizer step
                 Optimizer.step()
@@ -930,7 +935,13 @@ class Loss:
     def categorical_cross_entropy(self, y_pred, y, epsilon=1e-15):
         """Categorical Cross-Entropy (averaged over batch).
         y_pred: (N, C)  y: (N, C) one-hot"""
-        return (-y * ((y_pred + epsilon).log())).sum(axis=-1).mean()
+        # wo reductions
+        gg = (-y * ((y_pred + epsilon).log()))
+        print(f"W/O Recductions {gg}")
+        print(f"W/O Recductions1233 {gg.mean(-1)}")
+        
+        
+        return gg.sum(axis=-1)
 
 
 # ─────────────────────────────────────────────────────────────
