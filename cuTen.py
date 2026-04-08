@@ -136,11 +136,9 @@ class cuten:
             out_shape = cuten._broadcast_out_shape(self.shape, other.shape)
             a4 = cuten._pad_shape_4d(self.shape)
             b4 = cuten._pad_shape_4d(other.shape)
-            print(f"shape{out_shape}")
             out_size = 1
             for i in out_shape:
                 out_size*=i
-            print(f"size{out_size}")
             if out_size < 0:
                 raise ValueError(f"[cuTen]: Shapes {self.shape} and {other.shape} not broadcastable")
             out_ptr = seera_cuda.cuda_malloc_f32(out_size)

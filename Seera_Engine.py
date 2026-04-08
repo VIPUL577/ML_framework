@@ -439,10 +439,13 @@ class autograd4nn:
                 ndims = ctx["ndims"]
                 dim = ctx["dim"]
                 dimarr = ctx["dimarr"]
-                print(f"FFFFFinput: {input_shape}")
                 
-                input_shape, in_size, ndims, dim, dimarr = self._reduction_meta(dim,ndims,dimarr,input_shape)
-                print(f"insize: {in_size}\ninput: {input_shape}")
+                in_size = 1
+                for d in input_shape:
+                    in_size *= d
+
+                input_shape_, in_size_, ndims, dim, dimarr = self._reduction_meta(dim,ndims,dimarr,input_shape)
+                
                 rtype = ctx.get("type", None)
 
                 if rtype == "max":
@@ -481,7 +484,6 @@ class autograd4nn:
                     dA.shape = input_shape
                     dA.size = in_size
                     nodeg.node.child[0].node.cp = nodeg.node.child[0].node.cp + dA
-                    print("IT WORKED")
 
                 else:
                     # mean backward

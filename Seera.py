@@ -734,13 +734,11 @@ class Sequential:
 
                 # Compute loss
                 loss = Loss(ypred, y_batch)
-                print(f"FORWARD DONE!! {loss}")
                 # For batch: take mean loss across batch for single scalar
                 if use_gpu:
                     # GPU: loss.value is cuten, check shape
                     if len(loss.value.shape) > 0 and loss.value.size > 1:
                         loss = loss.mean()
-                        print(f"FORWARD DONE2!! {loss}")
                     batch_loss = float(np.sum(loss.value.to_host_f32()))
                 else:
                     if loss.value.ndim > 0 and loss.value.size > 1:
@@ -752,10 +750,8 @@ class Sequential:
 
                 # Backward
                 self.zero_grad()
-                print(f"backward!")
                 
                 autograd4nn(loss)
-                print(f"backward2! {loss}")
 
                 # Optimizer step
                 Optimizer.step()
@@ -940,8 +936,9 @@ class Loss:
         # print(f"W/O Recductions {gg}")
         # print(f"W/O Recductions1233 {gg.mean(-1)}")
         
-        
-        return gg.mean(axis=-1)
+        loss = gg.sum(axis=-1)
+        print(loss)
+        return loss
 
 
 # ─────────────────────────────────────────────────────────────
