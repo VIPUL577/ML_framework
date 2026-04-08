@@ -455,7 +455,6 @@ class tensor(node):
             out.node.child = [self]
             out.ireduction = {
                 "input_shape": self.value.shape,
-                "axis": axis,
                 "keepdims": keepdims,
                 "scale": 1.0,
                 "gpu": True,

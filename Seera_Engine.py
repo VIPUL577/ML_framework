@@ -436,13 +436,13 @@ class autograd4nn:
             cp = nodeg.node.cp
             if ctx.get("gpu", False):
                 input_shape = ctx["input_shape"]
-                axis = ctx["axis"]
                 ndims = ctx["ndims"]
                 dim = ctx["dim"]
                 dimarr = ctx["dimarr"]
+                print(f"FFFFFinput: {input_shape}")
                 
                 input_shape, in_size, ndims, dim, dimarr = self._reduction_meta(dim,ndims,dimarr,input_shape)
-
+                print(f"insize: {in_size}\ninput: {input_shape}")
                 rtype = ctx.get("type", None)
 
                 if rtype == "max":
@@ -481,6 +481,7 @@ class autograd4nn:
                     dA.shape = input_shape
                     dA.size = in_size
                     nodeg.node.child[0].node.cp = nodeg.node.child[0].node.cp + dA
+                    print("IT WORKED")
 
                 else:
                     # mean backward

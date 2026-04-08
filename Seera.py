@@ -937,11 +937,11 @@ class Loss:
         y_pred: (N, C)  y: (N, C) one-hot"""
         # wo reductions
         gg = (-y * ((y_pred + epsilon).log()))
-        print(f"W/O Recductions {gg}")
-        print(f"W/O Recductions1233 {gg.mean(-1)}")
+        # print(f"W/O Recductions {gg}")
+        # print(f"W/O Recductions1233 {gg.mean(-1)}")
         
         
-        return gg.sum(axis=-1)
+        return gg.mean(axis=-1)
 
 
 # ─────────────────────────────────────────────────────────────
