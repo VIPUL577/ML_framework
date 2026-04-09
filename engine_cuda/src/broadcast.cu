@@ -10,9 +10,9 @@
    ───────────────────────────────────────────────────────────── */
 namespace seera_cuda{
 __global__ void broadcast_kernel_4d(
-    const float* __restrict__ A,
-    const float* __restrict__ B,
-    float* __restrict__ C,
+    const float*  A,
+    const float*  B,
+    float*  C,
 
     int N, int Cc, int H, int W,
 

@@ -72,17 +72,20 @@ class Dense(Layer):
         bias_regularizer=None,
     ):
         super().__init__()
+        # Initializer scales — standard formulas (no extra damping)
+        # "normal" variants: use as std-dev with np.random.randn
+        # "uniform" variants: use as limit with np.random.uniform(-limit, limit)
         initializers = {
-            "zeros": 0,
-            "ones": 1,
-            "random_normal": 1,
-            "random_uniform": 0.05,
-            "he_normal": np.sqrt(2 / in_units) * 0.1,
-            "he_uniform": np.sqrt(6 / in_units) * 0.1,
-            "glorot_normal": np.sqrt(2 / (in_units + out_units)) * 0.1,
-            "glorot_uniform": np.sqrt(6 / (in_units + out_units)) * 0.1,
-            "lecun_normal": np.sqrt(1 / in_units) * 0.1,
-            "lecun_uniform": np.sqrt(3 / in_units) * 0.1,
+            "zeros": ("zeros", 0),
+            "ones": ("ones", 1),
+            "random_normal": ("normal", 1),
+            "random_uniform": ("uniform", 0.05),
+            "he_normal": ("normal", np.sqrt(2 / in_units)),
+            "he_uniform": ("uniform", np.sqrt(6 / in_units)),
+            "glorot_normal": ("normal", np.sqrt(2 / (in_units + out_units))),
+            "glorot_uniform": ("uniform", np.sqrt(6 / (in_units + out_units))),
+            "lecun_normal": ("normal", np.sqrt(1 / in_units)),
+            "lecun_uniform": ("uniform", np.sqrt(3 / in_units)),
         }
 
         if activation not in self.activations:
@@ -94,9 +97,32 @@ class Dense(Layer):
         self.in_units = in_units
         self.out_units = out_units
         # Weights: (in_units, out_units) — row-vector convention
-        self.weights = Tensor.random((in_units, out_units)) * initializers[kernel_initializer]
+        w_kind, w_scale = initializers[kernel_initializer]
+        b_kind, b_scale = initializers[bias_initializer]
+
+        # Generate weights with proper distribution
+        if w_kind == "normal":
+            w_init = np.random.randn(in_units, out_units).astype(np.float32) * w_scale
+        elif w_kind == "uniform":
+            w_init = np.random.uniform(-w_scale, w_scale, (in_units, out_units)).astype(np.float32)
+        elif w_kind == "zeros":
+            w_init = np.zeros((in_units, out_units), dtype=np.float32)
+        else:  # ones
+            w_init = np.ones((in_units, out_units), dtype=np.float32)
+
+        # Generate bias
+        if b_kind == "normal":
+            b_init = np.random.randn(1, out_units).astype(np.float32) * b_scale
+        elif b_kind == "uniform":
+            b_init = np.random.uniform(-b_scale, b_scale, (1, out_units)).astype(np.float32)
+        elif b_kind == "zeros":
+            b_init = np.zeros((1, out_units), dtype=np.float32)
+        else:  # ones
+            b_init = np.ones((1, out_units), dtype=np.float32)
+
+        self.weights = Tensor(w_init, is_leaf=True)
         # Bias: (1, out_units) — broadcasts over batch
-        self.bais = Tensor.random((1, out_units)) * initializers[bias_initializer]
+        self.bais = Tensor(b_init, is_leaf=True)
 
     def __call__(self, input_layer):
         if not isinstance(input_layer, Layer):
@@ -154,17 +180,19 @@ class Conv2D(Layer):
         bias_initializer="zeros",
     ):
         super().__init__()
+        fan_in = in_channels * kernel_size[0] * kernel_size[1]
+        fan_out = out_channels * kernel_size[0] * kernel_size[1]
         initializers = {
-            "zeros": 0,
-            "ones": 1,
-            "random_normal": 1,
-            "random_uniform": 0.05,
-            "he_normal": np.sqrt(2 / (in_channels * kernel_size[0] * kernel_size[1])) * 0.1,
-            "he_uniform": np.sqrt(6 / (in_channels * kernel_size[0] * kernel_size[1])) * 0.1,
-            "glorot_normal": np.sqrt(2 / ((in_channels + out_channels) * kernel_size[0] * kernel_size[1])) * 0.1,
-            "glorot_uniform": np.sqrt(6 / ((in_channels + out_channels) * kernel_size[0] * kernel_size[1])) * 0.1,
-            "lecun_normal": np.sqrt(1 / (in_channels * kernel_size[0] * kernel_size[1])) * 0.1,
-            "lecun_uniform": np.sqrt(3 / (in_channels * kernel_size[0] * kernel_size[1])) * 0.1,
+            "zeros": ("zeros", 0),
+            "ones": ("ones", 1),
+            "random_normal": ("normal", 1),
+            "random_uniform": ("uniform", 0.05),
+            "he_normal": ("normal", np.sqrt(2 / fan_in)),
+            "he_uniform": ("uniform", np.sqrt(6 / fan_in)),
+            "glorot_normal": ("normal", np.sqrt(2 / (fan_in + fan_out))),
+            "glorot_uniform": ("uniform", np.sqrt(6 / (fan_in + fan_out))),
+            "lecun_normal": ("normal", np.sqrt(1 / fan_in)),
+            "lecun_uniform": ("uniform", np.sqrt(3 / fan_in)),
         }
 
         if activation not in self.activations:
@@ -186,13 +214,17 @@ class Conv2D(Layer):
         self.zero_padding = zero_padding  # (padh, padw)
         # Bias: (1, F, 1, 1) broadcasts over (N, F, OH, OW)
         self.bais = 0
-        self.weights = Tensor(
-            np.random.normal(
-                loc=0, scale=0.5,
-                size=(out_channels, in_channels, kernel_size[0], kernel_size[1]),
-            ),
-            is_leaf=True,
-        ) * initializers[kernel_initializer]
+        w_shape = (out_channels, in_channels, kernel_size[0], kernel_size[1])
+        w_kind, w_scale = initializers[kernel_initializer]
+        if w_kind == "normal":
+            w_init = (np.random.randn(*w_shape) * w_scale).astype(np.float32)
+        elif w_kind == "uniform":
+            w_init = np.random.uniform(-w_scale, w_scale, w_shape).astype(np.float32)
+        elif w_kind == "zeros":
+            w_init = np.zeros(w_shape, dtype=np.float32)
+        else:
+            w_init = np.ones(w_shape, dtype=np.float32)
+        self.weights = Tensor(w_init, is_leaf=True)
 
     def __call__(self, input_layer):
         if not isinstance(input_layer, Layer):
@@ -311,15 +343,17 @@ class ConvTranspose2D(Layer):
         kernel_initializer="he_normal",
     ):
         super().__init__()
+        fan_in = in_channels * kernel_size[0] * kernel_size[1]
+        fan_out = out_channels * kernel_size[0] * kernel_size[1]
         initializers = {
-            "zeros": 0,
-            "ones": 1,
-            "random_normal": 1,
-            "random_uniform": 0.05,
-            "he_normal": np.sqrt(2 / (in_channels * kernel_size[0] * kernel_size[1])) * 0.1,
-            "he_uniform": np.sqrt(6 / (in_channels * kernel_size[0] * kernel_size[1])) * 0.1,
-            "glorot_normal": np.sqrt(2 / ((in_channels + out_channels) * kernel_size[0] * kernel_size[1])) * 0.1,
-            "glorot_uniform": np.sqrt(6 / ((in_channels + out_channels) * kernel_size[0] * kernel_size[1])) * 0.1,
+            "zeros": ("zeros", 0),
+            "ones": ("ones", 1),
+            "random_normal": ("normal", 1),
+            "random_uniform": ("uniform", 0.05),
+            "he_normal": ("normal", np.sqrt(2 / fan_in)),
+            "he_uniform": ("uniform", np.sqrt(6 / fan_in)),
+            "glorot_normal": ("normal", np.sqrt(2 / (fan_in + fan_out))),
+            "glorot_uniform": ("uniform", np.sqrt(6 / (fan_in + fan_out))),
         }
 
         if activation not in self.activations:
@@ -340,13 +374,17 @@ class ConvTranspose2D(Layer):
         self.stride = stride          # (strideh, stridew)
         self.zero_padding = zero_padding  # (padh, padw)
         # Weight: (Cin, Cout, KH, KW)
-        self.weights = Tensor(
-            np.random.normal(
-                loc=0, scale=0.5,
-                size=(in_channels, out_channels, kernel_size[0], kernel_size[1]),
-            ),
-            is_leaf=True,
-        ) * initializers[kernel_initializer]
+        w_shape = (in_channels, out_channels, kernel_size[0], kernel_size[1])
+        w_kind, w_scale = initializers[kernel_initializer]
+        if w_kind == "normal":
+            w_init = (np.random.randn(*w_shape) * w_scale).astype(np.float32)
+        elif w_kind == "uniform":
+            w_init = np.random.uniform(-w_scale, w_scale, w_shape).astype(np.float32)
+        elif w_kind == "zeros":
+            w_init = np.zeros(w_shape, dtype=np.float32)
+        else:
+            w_init = np.ones(w_shape, dtype=np.float32)
+        self.weights = Tensor(w_init, is_leaf=True)
         # Bias: (1, Cout, 1, 1) broadcasts over (N, Cout, Hout, Wout)
         self.bais = 0
 
@@ -603,65 +641,49 @@ class Sequential:
         if device == "cuda":
             self._move_params_to_device()
 
+    @staticmethod
+    def _tensor_to_gpu(t):
+        """Move a single Tensor's value + grad buffers to GPU.
+        Returns the tensor (modified in-place) for convenience."""
+        if _is_gpu(t.value):
+            return t
+        t.value = cuten(np.ascontiguousarray(t.value, dtype=np.float32))
+        # Rebuild gradient placeholders for GPU
+        z = [cuten.zeros_like(t.value) for _ in range(4)]
+        t.node.child_grad = np.array(
+            [[z[0], z[1]], [z[2], z[3]]], dtype=object)
+        t.node.cp = cuten.zeros_like(t.value)
+        return t
+
     def _move_params_to_device(self):
         """Move all learnable parameters to GPU (cuten)."""
         for layer in self.model:
             if isinstance(layer, (Dense, Conv2D, ConvTranspose2D)):
-                if not _is_gpu(layer.weights.value):
-                    layer.weights.value = cuten(np.ascontiguousarray(
-                        layer.weights.value, dtype=np.float32))
-                    # Rebuild gradient placeholders for GPU
-                    z1 = cuten.zeros_like(layer.weights.value)
-                    z2 = cuten.zeros_like(layer.weights.value)
-                    z3 = cuten.zeros_like(layer.weights.value)
-                    z4 = cuten.zeros_like(layer.weights.value)
-                    layer.weights.node.child_grad = np.array(
-                        [[z1, z2], [z3, z4]], dtype=object)
-                    layer.weights.node.cp = cuten.zeros_like(layer.weights.value)
+                self._tensor_to_gpu(layer.weights)
                 # bias: Dense has it at init, Conv2D/ConvTranspose2D lazy-init it
-                if hasattr(layer, 'bais') and isinstance(layer.bais, Tensor) and not _is_gpu(layer.bais.value):
-                    layer.bais.value = cuten(np.ascontiguousarray(
-                        layer.bais.value, dtype=np.float32))
-                    z1 = cuten.zeros_like(layer.bais.value)
-                    z2 = cuten.zeros_like(layer.bais.value)
-                    z3 = cuten.zeros_like(layer.bais.value)
-                    z4 = cuten.zeros_like(layer.bais.value)
-                    layer.bais.node.child_grad = np.array(
-                        [[z1, z2], [z3, z4]], dtype=object)
-                    layer.bais.node.cp = cuten.zeros_like(layer.bais.value)
+                if hasattr(layer, 'bais') and isinstance(layer.bais, Tensor):
+                    self._tensor_to_gpu(layer.bais)
             elif isinstance(layer, (BatchNorm1d, BatchNorm2d)):
-                if not _is_gpu(layer.gamma.value):
-                    layer.gamma.value = cuten(np.ascontiguousarray(
-                        layer.gamma.value, dtype=np.float32))
-                    z1 = cuten.zeros_like(layer.gamma.value)
-                    z2 = cuten.zeros_like(layer.gamma.value)
-                    z3 = cuten.zeros_like(layer.gamma.value)
-                    z4 = cuten.zeros_like(layer.gamma.value)
-                    layer.gamma.node.child_grad = np.array(
-                        [[z1, z2], [z3, z4]], dtype=object)
-                    layer.gamma.node.cp = cuten.zeros_like(layer.gamma.value)
-                    layer.weights = layer.gamma
-                if not _is_gpu(layer.beta.value):
-                    layer.beta.value = cuten(np.ascontiguousarray(
-                        layer.beta.value, dtype=np.float32))
-                    z1 = cuten.zeros_like(layer.beta.value)
-                    z2 = cuten.zeros_like(layer.beta.value)
-                    z3 = cuten.zeros_like(layer.beta.value)
-                    z4 = cuten.zeros_like(layer.beta.value)
-                    layer.beta.node.child_grad = np.array(
-                        [[z1, z2], [z3, z4]], dtype=object)
-                    layer.beta.node.cp = cuten.zeros_like(layer.beta.value)
-                    layer.bais = layer.beta
+                self._tensor_to_gpu(layer.gamma)
+                layer.weights = layer.gamma
+                self._tensor_to_gpu(layer.beta)
+                layer.bais = layer.beta
 
     def forward(self, X=None):
         if X is not None:
+            # Auto-convert numpy to Tensor
+            if isinstance(X, np.ndarray):
+                X = Tensor(X, is_leaf=True,
+                           device="cuda" if self.device == "cuda" else "cpu")
             if not isinstance(X, Tensor):
-                raise TypeError("Input must be a Tensor.")
+                raise TypeError("Input must be a Tensor or numpy array.")
+            # Auto-move CPU tensor to GPU if model is on GPU
+            if self.device == "cuda" and not _is_gpu(X.value):
+                X = Tensor(X.value, is_leaf=True, device="cuda")
             self.model[0].inputs = X
         output = None
         for layer in self.model:
             output = layer.forward()
-            # print(f"Layer {type(layer)} done")
         return output
 
     def predict(self, X):
@@ -734,23 +756,22 @@ class Sequential:
 
                 # Compute loss
                 loss = Loss(ypred, y_batch)
-                # For batch: take mean loss across batch for single scalar
+
+                # Reduce to scalar if needed
                 if use_gpu:
-                    # GPU: loss.value is cuten, check shape
                     if len(loss.value.shape) > 0 and loss.value.size > 1:
                         loss = loss.mean()
-                    batch_loss = float(np.sum(loss.value.to_host_f32()))
+                    batch_loss = float(loss.value.to_host_f32().ravel()[0])
                 else:
                     if loss.value.ndim > 0 and loss.value.size > 1:
                         loss = loss.mean()
-                    batch_loss = float(np.sum(loss.value))
+                    batch_loss = float(loss.value.ravel()[0])
 
                 epoch_loss += batch_loss
                 num_batches += 1
 
                 # Backward
                 self.zero_grad()
-                
                 autograd4nn(loss)
 
                 # Optimizer step
@@ -930,15 +951,15 @@ class Loss:
 
     def categorical_cross_entropy(self, y_pred, y, epsilon=1e-15):
         """Categorical Cross-Entropy (averaged over batch).
-        y_pred: (N, C)  y: (N, C) one-hot"""
-        # wo reductions
-        gg = (-y * ((y_pred + epsilon).log()))
-        # print(f"W/O Recductions {gg}")
-        # print(f"W/O Recductions1233 {gg.mean(-1)}")
-        
-        loss = gg.sum(axis=-1)
-        print(loss)
-        return loss
+        y_pred: (N, C)  softmax output
+        y:      (N, C)  one-hot labels
+        Returns scalar loss (mean over batch)."""
+        # -sum_c( y * log(y_pred + eps) ) summed over classes, then mean over batch
+        per_sample = (-y * (y_pred.log())).sum(axis=-1)
+        # print("#"*30)
+        # print(y_pred)
+        # print("#"*30)
+        return per_sample.mean()
 
 
 # ─────────────────────────────────────────────────────────────

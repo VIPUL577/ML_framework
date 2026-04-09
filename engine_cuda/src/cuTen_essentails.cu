@@ -37,7 +37,7 @@ namespace seera_cuda
         int index = blockDim.x * blockIdx.x + threadIdx.x;
         if (index < total_elements)
         {
-            arr[index] = 1.0f;
+            arr[index] = 0.0f;
         }
     }
 

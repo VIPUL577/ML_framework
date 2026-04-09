@@ -39,6 +39,8 @@ namespace seera_cuda
     void cuda_matmul(float *hA, float *hB, float *hC, int M, int N, int K, int Nbatch);
     void cuda_matmul_bwd(float *A, float *B, float *dC, float *dA, float *dB,
                          int M, int N, int K, int Nbatch);
+    void cuda_transpose_2d(float *in, float *out, int rows, int cols);
+    void cuda_transpose_3d(float *in, float *out, int Nbatch, int M, int K);
     void cuda_conv2DTranpose_fwd(float *hA, float *hB, float *hC, int batch,
                                  int Cin, int Hin, int Win, int Cout, int KH,
                                  int KW, int strideh, int stridew, int padh,
@@ -49,13 +51,13 @@ namespace seera_cuda
                                   int strideh, int stridew, int padh,
                                   int padw);
 
-    void cuda_maxpool_fwd(float *image, float *out, short *mask,
+    void cuda_maxpool_fwd(float *image, float *out, int *mask,
                           int batchN, int C, int H, int W,
                           int R, int S,
                           int pad_h, int pad_w,
                           int stride_h, int stride_w);
 
-    void cuda_maxpool_bwd(float *dout, short *mask, float *dX, int batchN, int C, int H, int W,
+    void cuda_maxpool_bwd(float *dout, int *mask, float *dX, int batchN, int C, int H, int W,
                           int R, int S, int pad_h, int pad_w, int stride_h, int stride_w);
 
     void cuda_unpooling_fwd(float *d_inp, float *d_out,

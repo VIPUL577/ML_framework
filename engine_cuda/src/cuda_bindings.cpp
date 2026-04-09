@@ -272,6 +272,20 @@ PYBIND11_MODULE(seera_cuda, m)
                   reinterpret_cast<float *>(dA),
                   reinterpret_cast<float *>(dB), M, N, K, Nbatch); }, "Matmul backward (GPU ptrs)");
 
+      // cuda_transpose_2d: in[rows x cols] → out[cols x rows]
+      m.def("cuda_transpose_2d", [](uintptr_t in, uintptr_t out, int rows, int cols)
+            { seera_cuda::cuda_transpose_2d(
+                  reinterpret_cast<float *>(in),
+                  reinterpret_cast<float *>(out),
+                  rows, cols); }, "Transpose 2D: in[rows,cols] → out[cols,rows] (GPU ptrs)");
+
+      // cuda_transpose_3d: in[Nbatch, M, K] → out[Nbatch, K, M]
+      m.def("cuda_transpose_3d", [](uintptr_t in, uintptr_t out, int Nbatch, int M, int K)
+            { seera_cuda::cuda_transpose_3d(
+                  reinterpret_cast<float *>(in),
+                  reinterpret_cast<float *>(out),
+                  Nbatch, M, K); }, "Transpose 3D batched: in[Nbatch,M,K] → out[Nbatch,K,M] (GPU ptrs)");
+
       // ══════════════════════════════════════════════════════════════════
       // Conv2D
       // ══════════════════════════════════════════════════════════════════
@@ -325,14 +339,14 @@ PYBIND11_MODULE(seera_cuda, m)
             { seera_cuda::cuda_maxpool_fwd(
                   reinterpret_cast<float *>(image),
                   reinterpret_cast<float *>(out),
-                  reinterpret_cast<short *>(mask),
+                  reinterpret_cast<int *>(mask),
                   batchN, C, H, W, R, S, pad_h, pad_w, stride_h, stride_w); }, "MaxPool2D forward (GPU ptrs, mask is int16 GPU)");
 
       // cuda_maxpool_bwd
       m.def("cuda_maxpool_bwd", [](uintptr_t dout, uintptr_t mask, uintptr_t dX, int batchN, int C, int H, int W, int R, int S, int pad_h, int pad_w, int stride_h, int stride_w)
             { seera_cuda::cuda_maxpool_bwd(
                   reinterpret_cast<float *>(dout),
-                  reinterpret_cast<short *>(mask),
+                  reinterpret_cast<int *>(mask),
                   reinterpret_cast<float *>(dX),
                   batchN, C, H, W, R, S, pad_h, pad_w, stride_h, stride_w); }, "MaxPool2D backward (GPU ptrs)");
 

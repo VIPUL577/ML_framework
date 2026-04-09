@@ -99,6 +99,7 @@ class tensor(node):
         self.ibatchnorm = None
         self.ireduction = None
         self.convTrans = (False, 1, 1, 0, 0)
+        self.itranspose = False
 
         if is_leaf:
             self.node.out = self.value
@@ -404,7 +405,7 @@ class tensor(node):
     # ─── Matmul (C++ / CUDA accelerated) ─────────────────────
     def matmul(self, other):
         gpu = _is_gpu(self.value)
-
+            # self should be batched 
         if gpu:
             result = self.value.matmul(other.value)
             out = tensor(result)
@@ -607,10 +608,17 @@ class tensor(node):
         return self.value.shape
 
     def T(self):
-        transposed = self.value.T
-        out = tensor(transposed, dtype=self.dtype, is_leaf=self.is_leaf)
-        self.node = out.node
-        self.matm = out.matm
+        gpu = _is_gpu(self.value)
+
+        if gpu:
+            transposed = self.value.T          # cuten.T — GPU kernel
+        else:
+            transposed = self.value.T          # numpy .T
+
+        out = tensor(transposed, dtype=self.dtype, is_leaf=False)
+        out.node.child = [self]
+        out.node.out = out.value
+        out.itranspose = True
         return out
 
     def squeeze(self, axis=None):
@@ -625,12 +633,7 @@ class tensor(node):
         N = original_shape[0]
 
         if gpu:
-            # cuten flatten: reshape in place then wrap as new tensor
-            flat = cuten(data=None, dtype="float32")
-            flat.main_ptr = self.value.main_ptr
-            flat.size = self.value.size
-            flat.shape = (N, int(self.value.size / N))
-            out = tensor(flat)
+            out = tensor(self.value.flatten())
         else:
             out = tensor(self.value.reshape(N, -1))
 
@@ -668,6 +671,8 @@ class tensor(node):
             padh, padw = padding
 
         if gpu:
+            if len(self.value.shape)==3:
+                self.value.shape = (1,)+ self.value.shape
             result = self.value.conv2d(W.value, strideh=strideh, stridew=stridew,
                                        padh=padh, padw=padw)
             out = tensor(result)

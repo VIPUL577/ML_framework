@@ -8,7 +8,7 @@ namespace seera_cuda
 {
 
     __global__ void maxPool(
-        float *input_image, float *conv, short *mask,
+        float *input_image, float *conv, int *mask,
         int C, int H, int W, int R, int S,
         int pad_h, int pad_w, int stride_h, int stride_w,
         int H_out, int W_out)
@@ -30,6 +30,8 @@ namespace seera_cuda
                 int input_idx = ((batchN * C + ni) * H + ht) * W + wt;
                 temp = input_image[input_idx];
             }
+            int rmax = 0;
+            int smax = 0;
             for (int ir = 0; ir < R; ir++)
             {
                 for (int is = 0; is < S; is++)
@@ -44,25 +46,30 @@ namespace seera_cuda
                         if (temp <= ing)
                         {
                             temp = ing;
-                            mask[input_idx] = 1;
+                            rmax = ir;
+                            smax = is;
                         }
                         else
                         {
                             mask[input_idx] = 0;
                         }
                     }
-                    else
-                    {
-                        if (temp <= 0.0f)
-                            temp = 0.0f;
-                    }
+                    // else
+                    // {
+                    //     if (temp <= 0.0f)
+                    //         temp = 0.0f;
+                    // }
                 }
             }
+            int h_in = h_out * stride_h - pad_h + rmax;
+            int w_in = w_out * stride_w - pad_w + smax;
+            int input_idx = ((batchN * C + ni) * H + h_in) * W + w_in;
+            mask[input_idx] = 1;
             conv[(batchN * C + ni) * H_out * W_out + h_out * W_out + w_out] = temp;
         }
     }
     __global__ void maxPool_bwd(
-        float *dX, float *dout, short *mask,
+        float *dX, float *dout, int *mask,
         int C, int H, int W, int R, int S,
         int pad_h, int pad_w, int stride_h, int stride_w,
         int W_out, int H_out)
@@ -90,7 +97,7 @@ namespace seera_cuda
         }
     }
 
-    void cuda_maxpool_fwd(float *image, float *out, short *mask,
+    void cuda_maxpool_fwd(float *image, float *out, int *mask,
                           int batchN, int C, int H, int W,
                           int R, int S,
                           int pad_h, int pad_w,
@@ -103,7 +110,8 @@ namespace seera_cuda
         int output_elems_wob = C * H_out * W_out;
 
         // Assume 'out' is already cudaMalloc'ed by caller
-        cudaMemset(out, 0, sizeof(float) * output_elems);
+        cudaMemset(out, 0.0, sizeof(float) * output_elems);
+        cudaMemset(mask, 0, sizeof(int) * H * W * C * batchN);
 
         int threads_per_block = 256;
         int Nblock = (output_elems_wob + threads_per_block - 1) / threads_per_block;
@@ -120,9 +128,9 @@ namespace seera_cuda
     }
 
     void cuda_maxpool_bwd(
-        float *dout,  // [N,C,H_out,W_out]
-        short *mask, // [N,C,H,W]
-        float *dX,    // [N,C,H,W] (output)
+        float *dout, // [N,C,H_out,W_out]
+        int *mask,   // [N,C,H,W]
+        float *dX,   // [N,C,H,W] (output)
         int batchN, int C, int H, int W,
         int R, int S,
         int pad_h, int pad_w,

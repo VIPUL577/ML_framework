@@ -44,6 +44,8 @@ class cuten:
         if dtype not in self.supported_types :
             raise ValueError("[cuTen]:Not Supported by cuTen, try in CPU")
 
+        self._owns_memory = False  # set True only when we allocate
+
         if isinstance(data, np.ndarray):
             # Transfer numpy array to GPU immediately
             arr = data.astype(dtype)
@@ -60,8 +62,9 @@ class cuten:
             self.shape = None
             self.size = None
             self.dtype = dtype
+            self._owns_memory = True  # data=None path: caller will assign a fresh GPU ptr
                 
-            
+
 
     def _allocate_convert_to_gpu(self,data:np.ndarray, shape, size, dtype):
         # print(f"the dtype is {dtype}")
@@ -69,6 +72,18 @@ class cuten:
         self.shape = shape
         self.size = size
         self.dtype = dtype
+        self._owns_memory = True
+
+    def __del__(self):
+        """Free GPU memory when this tensor is garbage-collected."""
+        if getattr(self, '_owns_memory', False) and getattr(self, 'main_ptr', None) is not None:
+            try:
+                seera_cuda.cuda_free(self.main_ptr)
+            except Exception:
+                pass
+            self.main_ptr = None
+
+
     
     def to_host_f32(self):
         return seera_cuda.to_host_f32(self.main_ptr,self.shape)
@@ -150,9 +165,15 @@ class cuten:
             return result
             
         if isinstance(other,int) or isinstance(other,float):
-            seera_cuda.cuda_scaler_add_f(self.main_ptr, float(other),self.size )
-        
-            return self 
+            # Must NOT mutate self — allocate a new cuten and apply there
+            new_ptr = seera_cuda.cuda_malloc_f32(self.size)
+            seera_cuda.cuda_memcopy_devicetodevice(new_ptr, self.main_ptr, self.size)
+            seera_cuda.cuda_scaler_add_f(new_ptr, float(other), self.size)
+            result = cuten(data=None, dtype="float32")
+            result.main_ptr = new_ptr
+            result.shape = self.shape
+            result.size = self.size
+            return result
     
     def __mul__(self, other):
     
@@ -180,18 +201,30 @@ class cuten:
             return result
             
         if isinstance(other,int) or isinstance(other,float):
-            seera_cuda.cuda_scaler_multiply_f(self.main_ptr, float(other),self.size )
-        
-            return self 
+            # Must NOT mutate self — allocate a new cuten and apply there
+            new_ptr = seera_cuda.cuda_malloc_f32(self.size)
+            seera_cuda.cuda_memcopy_devicetodevice(new_ptr, self.main_ptr, self.size)
+            seera_cuda.cuda_scaler_multiply_f(new_ptr, float(other), self.size)
+            result = cuten(data=None, dtype="float32")
+            result.main_ptr = new_ptr
+            result.shape = self.shape
+            result.size = self.size
+            return result
         
         raise ValueError("[cuTen]: Not Supported, Can be Device Mismatch")
         
         
     def __pow__(self, other):
         if isinstance(other,int) or isinstance(other,float):
-            seera_cuda.cuda_power_of(self.main_ptr, float(other),self.size )
-        
-            return self 
+            # Must NOT mutate self — allocate a new cuten and apply there
+            new_ptr = seera_cuda.cuda_malloc_f32(self.size)
+            seera_cuda.cuda_memcopy_devicetodevice(new_ptr, self.main_ptr, self.size)
+            seera_cuda.cuda_power_of(new_ptr, float(other), self.size)
+            result = cuten(data=None, dtype="float32")
+            result.main_ptr = new_ptr
+            result.shape = self.shape
+            result.size = self.size
+            return result
     
     def __neg__(self):    return self * (-1)
     def __sub__(self, other): return self + (-other)
@@ -207,14 +240,70 @@ class cuten:
             size *= dim
         if self.size != size:
             raise ValueError(f"[cuTen]: Cannot reshape cuten of size: {self.size} to shape {shape}")
-        
-        self.shape = shape
+        # Return a NEW cuten that shares the same GPU memory but has different shape.
+        # Do NOT mutate self — that would corrupt the original tensor's metadata.
+        result = cuten(data=None, dtype=self.dtype)
+        result.main_ptr = self.main_ptr
+        result.shape = shape
+        result.size = size
+        result._owns_memory = False  # shared pointer — do NOT free
+        return result
         
     def __repr__(self):
-        np_local = seera_cuda.to_host_f32(self.main_ptr,self.shape)
+        if self.dtype == "float32":
+            np_local = seera_cuda.to_host_f32(self.main_ptr,self.shape)
+            
+        elif self.dtype == "int32":
+            np_local = seera_cuda.to_host_i32(self.main_ptr,self.shape)
         print(np_local)
         
         return "IT DOES WORK"
+
+    # ==================================================================
+    #  Transpose  —  .T property (mirrors numpy .T)
+    #  1-D: no-op (returns a copy)
+    #  2-D: (M, N) → (N, M)              — GPU kernel
+    #  3-D: (Nbatch, M, K) → (Nbatch, K, M) — batched GPU kernel
+    #  N-D: reverses all axes via host round-trip
+    # ==================================================================
+    @property
+    def T(self) -> cuten:
+        """Return a new cuten with axes reversed (GPU-side transpose)."""
+        ndim = len(self.shape)
+        if ndim < 2:
+            # 0-D / 1-D: transpose is a no-op (return a copy)
+            new_ptr = seera_cuda.cuda_malloc_f32(self.size)
+            seera_cuda.cuda_memcopy_devicetodevice(new_ptr, self.main_ptr, self.size)
+            result = cuten(data=None, dtype="float32")
+            result.main_ptr = new_ptr
+            result.shape = self.shape
+            result.size = self.size
+            return result
+
+        if ndim == 2:
+            rows, cols = self.shape
+            out_ptr = seera_cuda.cuda_malloc_f32(self.size)
+            seera_cuda.cuda_transpose_2d(self.main_ptr, out_ptr, rows, cols)
+            result = cuten(data=None, dtype="float32")
+            result.main_ptr = out_ptr
+            result.shape = (cols, rows)
+            result.size = self.size
+            return result
+
+        if ndim == 3:
+            Nbatch, M, K = self.shape
+            out_ptr = seera_cuda.cuda_malloc_f32(self.size)
+            seera_cuda.cuda_transpose_3d(self.main_ptr, out_ptr, Nbatch, M, K)
+            result = cuten(data=None, dtype="float32")
+            result.main_ptr = out_ptr
+            result.shape = (Nbatch, K, M)
+            result.size = self.size
+            return result
+
+        # N-D (N ≥ 4): full generality via host round-trip
+        host = seera_cuda.to_host_f32(self.main_ptr, self.shape)
+        transposed = host.T.copy()
+        return cuten(transposed, dtype="float32")
 
     # ==================================================================
     #  Helper: run a unary activation kernel that writes (out, grad)
@@ -324,7 +413,7 @@ class cuten:
         """
         Matrix multiply self @ other.
         self  : shape (..., M, K)  or (M, K)
-        other : shape (..., K, N)  or (K, N)
+        other : shape (..., K, N)  or (N,K, N)
         Batch dimensions of self and other must match (if present).
         Uses cuda_matmul(A, B, C, M, N, K, Nbatch).
         """
@@ -338,22 +427,22 @@ class cuten:
             raise ValueError(
                 f"[cuTen]: matmul: inner dimensions must agree, got {self.shape} @ {other.shape}")
 
-        # batch count
-        self_batch = self.shape[:-2]
-        other_batch = other.shape[:-2]
 
-        if self_batch and other_batch and self_batch != other_batch:
-            raise ValueError(
-                f"[cuTen]: matmul: batch dims must match, got {self_batch} vs {other_batch}")
-        batch_shape = self_batch if self_batch else other_batch
+        if len(self.shape)>3:
+            raise ValueError(f"[cuTen] A cannot be of more than 3 Dimensional")
+        if len(other.shape)>2:
+            raise ValueError(f"[cuTen] B cannot be of more than 2 Dimensional")
+        
         Nbatch = 1
-        for d in batch_shape:
-            Nbatch *= d
-
-        out_shape = tuple(batch_shape) + (M, N) if batch_shape else (M, N)
-        out_size = 1
-        for d in out_shape:
-            out_size *= d
+        if len(self.shape)==3 :
+            Nbatch = self.shape[0]
+        
+        out_size = Nbatch*M*N
+        # Keep output 2D for non-batched case to match Dense layer expectations
+        if Nbatch == 1:
+            out_shape = (M, N)
+        else:
+            out_shape = (Nbatch, M, N)
 
         out_ptr = seera_cuda.cuda_malloc_f32(out_size)
         seera_cuda.cuda_matmul(self.main_ptr, other.main_ptr, out_ptr,
@@ -497,7 +586,7 @@ class cuten:
         out_size = batchN * C * OH * OW
 
         out_ptr = seera_cuda.cuda_malloc_f32(out_size)
-        mask_ptr = seera_cuda.cuda_malloc_i16(out_size)
+        mask_ptr = seera_cuda.cuda_malloc_i32(self.size)
         seera_cuda.cuda_maxpool_fwd(self.main_ptr, out_ptr, mask_ptr,
                                     batchN, C, H, W, KH, KW,
                                     padh, padw, strideh, stridew)
@@ -507,10 +596,10 @@ class cuten:
         result.shape = out_shape
         result.size = out_size
 
-        mask = cuten(data=None, dtype="int16")
+        mask = cuten(data=None, dtype="int32")
         mask.main_ptr = mask_ptr
-        mask.shape = out_shape
-        mask.size = out_size
+        mask.shape = self.shape
+        mask.size = self.size
 
         return result, mask
 
@@ -581,8 +670,6 @@ class cuten:
     
     @staticmethod
     def _concatenate(ptr1, ptr2, ptr3 , n1, n2):
-        print(type(ptr1))
-        
         seera_cuda.cuda_memcopy_devicetodevice(ptr3,ptr1,n1)
         seera_cuda.cuda_memcopy_devicetodevice(ptr3+n1*4,ptr2,n2) 
 
@@ -605,7 +692,6 @@ class cuten:
         n1 = int(self.size/N)
         n2 = int(other.size/N)
         new_ptr = seera_cuda.cuda_malloc_f32(self.size+other.size) 
-        print(type(new_ptr))
         for i in range (0,N):
             ptr1 = self.main_ptr + (n1*i*4)
             ptr2 = other.main_ptr + (n2*i*4)      
@@ -711,7 +797,8 @@ class cuten:
     # 20) Flatten input should be batched
     # ================================================================== 
     def flatten(self):
-        self.reshape((self.shape[0],int(self.size/self.shape[0])))    
+        
+        return self.reshape((self.shape[0], int(self.size/self.shape[0])))
             
                  
                   

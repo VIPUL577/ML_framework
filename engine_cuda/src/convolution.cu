@@ -22,7 +22,6 @@ namespace seera_cuda
         __shared__ half krl[16 * 16];
 
         int batchno = blockIdx.z;
-
         wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> im2col_frag;
         wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> krl_frag;
         wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag;

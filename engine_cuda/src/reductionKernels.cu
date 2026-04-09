@@ -10,11 +10,12 @@ namespace seera_cuda
 {
 
   __global__ void Reductionsum(float *arr, float *output, int limit, int stride,
-                               float divisor)
+                               float divisor, int totalthreads)
   {
-    float temp = 0.0f;
-
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= totalthreads) return;
+
+    float temp = 0.0f;
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
@@ -28,10 +29,11 @@ namespace seera_cuda
   }
 
   __global__ void Reductionmax(float *arr, float *output, int limit, int stride,
-                               float dummy)
+                               float dummy, int totalthreads)
   {
-
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= totalthreads) return;
+
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
@@ -45,10 +47,11 @@ namespace seera_cuda
     output[tid] = temp;
   }
   __global__ void Reductionmin(float *arr, float *output, int limit, int stride,
-                               float dummy)
+                               float dummy, int totalthreads)
   {
-
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= totalthreads) return;
+
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
@@ -61,10 +64,13 @@ namespace seera_cuda
 
     output[tid] = temp;
   }
-  __global__ void Reductionargmin(float *arr, int *output, int limit, int stride)
+  __global__ void Reductionargmin(float *arr, int *output, int limit, int stride,
+                                  int totalthreads)
   {
-    int arg = 0;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= totalthreads) return;
+
+    int arg = 0;
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
@@ -81,10 +87,13 @@ namespace seera_cuda
 
     output[tid] = arg;
   }
-  __global__ void Reductionargmax(float *arr, int *output, int limit, int stride)
+  __global__ void Reductionargmax(float *arr, int *output, int limit, int stride,
+                                  int totalthreads)
   {
-    int arg = 0;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= totalthreads) return;
+
+    int arg = 0;
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
@@ -127,7 +136,7 @@ namespace seera_cuda
     int threadsPerBlock = 256;
     int blocks = (totalthreads + threadsPerBlock - 1) / threadsPerBlock;
 
-    kernel<<<blocks, threadsPerBlock>>>(A, out, limit, stride, divisor);
+    kernel<<<blocks, threadsPerBlock>>>(A, out, limit, stride, divisor, totalthreads);
 
     cudaDeviceSynchronize();
   }
@@ -154,7 +163,7 @@ namespace seera_cuda
     int threads = 256;
     int blocks = (totalthreads + threads - 1) / threads;
 
-    kernel<<<blocks, threads>>>(A, out, limit, stride);
+    kernel<<<blocks, threads>>>(A, out, limit, stride, totalthreads);
 
     cudaDeviceSynchronize();
   }
@@ -198,21 +207,18 @@ namespace seera_cuda
   // sum backward: broadcast upstream gradient back along reduced dimension
   // dA[outer * limit + inner + i*stride] = dOut[tid]  for i in [0, dimarr[dim])
   __global__ void Reductionsum_bwd(float *dOut, float *dA, int limit, int stride,
-                                   float divisor)
+                                   float divisor, int totalthreads)
   {
-
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= totalthreads) return;
 
     int inner = tid % stride;
-
     int outer = tid / stride;
-
     int base = outer * limit + inner;
 
-    float grad = dOut[tid];
+    float grad = dOut[tid] / divisor;
 
     for (int i = 0; i < limit; i += stride)
-
     {
       dA[base + i] = grad;
     }
@@ -221,9 +227,11 @@ namespace seera_cuda
   // max/min backward: gradient flows only to the position matching the forward output
   // dA[position_of_max] = dOut[tid], all others = 0
   __global__ void Reductionmax_bwd(float *dOut, float *fwdInput, float *fwdOutput,
-                                   float *dA, int limit, int stride)
+                                   float *dA, int limit, int stride, int totalthreads)
   {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= totalthreads) return;
+
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
@@ -234,7 +242,6 @@ namespace seera_cuda
 
     for (int i = 0; i < limit; i += stride)
     {
-      // Route gradient to the first position that matches the max value
       if (!found && fwdInput[base + i] == out_val)
       {
         dA[base + i] = grad;
@@ -248,9 +255,11 @@ namespace seera_cuda
   }
 
   __global__ void Reductionmin_bwd(float *dOut, float *fwdInput, float *fwdOutput,
-                                   float *dA, int limit, int stride)
+                                   float *dA, int limit, int stride, int totalthreads)
   {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= totalthreads) return;
+
     int inner = tid % stride;
     int outer = tid / stride;
     int base = outer * limit + inner;
@@ -300,7 +309,7 @@ namespace seera_cuda
     int threadsPerBlock = 256;
     int blocks = (totalthreads + threadsPerBlock - 1) / threadsPerBlock;
 
-    kernel<<<blocks, threadsPerBlock>>>(dOut, dA, limit, stride, divisor);
+    kernel<<<blocks, threadsPerBlock>>>(dOut, dA, limit, stride, divisor, totalthreads);
 
     cudaDeviceSynchronize();
   }
@@ -331,7 +340,7 @@ namespace seera_cuda
     int blocks = (totalthreads + threadsPerBlock - 1) / threadsPerBlock;
 
     kernel<<<blocks, threadsPerBlock>>>(dOut, fwdInput, fwdOutput, dA, limit,
-                                        stride);
+                                        stride, totalthreads);
 
     cudaDeviceSynchronize();
   }

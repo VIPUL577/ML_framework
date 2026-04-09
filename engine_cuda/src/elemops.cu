@@ -49,6 +49,7 @@ namespace seera_cuda
         int blocks = (size + threads - 1) / threads;
 
         elemadd<<<blocks, threads>>>(A, B, C, size);
+        cudaDeviceSynchronize();
     }
 
     void cuda_elemsub_gputogpu(float *A, float *B, float *C, int size)
@@ -57,6 +58,7 @@ namespace seera_cuda
         int blocks = (size + threads - 1) / threads;
 
         elemsub<<<blocks, threads>>>(A, B, C, size);
+        cudaDeviceSynchronize();
     }
 
     void cuda_elemdiv_gputogpu(float *A, float *B, float *C, int size)
@@ -65,6 +67,7 @@ namespace seera_cuda
         int blocks = (size + threads - 1) / threads;
 
         elemdiv<<<blocks, threads>>>(A, B, C, size);
+        cudaDeviceSynchronize();
     }
 
     void cuda_elemmult_gputogpu(float *A, float *B, float *C, int size)
@@ -73,6 +76,7 @@ namespace seera_cuda
         int blocks = (size + threads - 1) / threads;
 
         elemmult<<<blocks, threads>>>(A, B, C, size);
+        cudaDeviceSynchronize();
     }
 
     // ======================== BACKWARD WRAPPERS ========================

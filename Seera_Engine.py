@@ -54,13 +54,13 @@ class autograd4nn:
         result = grad
         for ax in reversed(reduce_axes):
             result = result.sum(dim=ax)
-        # If we had extra leading dims, the shape may need trimming
-        if len(result.shape) > target_ndim:
-            # Squeeze leading 1s
-            new_shape = result.shape[ndim_diff:]
-            result.shape = new_shape
+        # Always force the final shape to match target_shape.
+        # sum(dim=ax) removes the axis entirely (e.g. (N,out) dim=0 → (out,)),
+        # but target may be (1,out). Fix shape metadata to match.
+        if result.shape != target_shape:
+            result.shape = target_shape
             result.size = 1
-            for d in new_shape:
+            for d in target_shape:
                 result.size *= d
         return result
 
@@ -313,13 +313,18 @@ class autograd4nn:
         elif nodeg.flctx:
             if gpu:
                 # reshape the gradient back to original shape
-                reshaped = cuten(data=None, dtype="float32")
-                reshaped.main_ptr = nodeg.node.cp.main_ptr
-                reshaped.size = nodeg.node.cp.size
-                reshaped.shape = tuple(nodeg.flctx)
+                reshaped = nodeg.node.cp.reshape(nodeg.flctx)
                 nodeg.node.child[0].node.cp = nodeg.node.child[0].node.cp + reshaped
             else:
                 nodeg.node.child[0].node.cp += nodeg.node.cp.reshape(nodeg.flctx)
+
+        # ── Transpose backward ──
+        elif nodeg.itranspose:
+            cp = nodeg.node.cp
+            if gpu:
+                nodeg.node.child[0].node.cp = nodeg.node.child[0].node.cp + cp.T
+            else:
+                nodeg.node.child[0].node.cp += cp.T
 
         # ── Conv2D backward ──
         elif nodeg.iconv2d[0]:
@@ -524,8 +529,9 @@ class autograd4nn:
                 N = B.value.shape[-1]
 
                 Nbatch = 1
-                for d in A.value.shape[:-2]:
-                    Nbatch *= d
+                if len(A.value.shape)>2:
+                    Nbatch=  A.value.shape[0]
+
 
                 dA_ptr = seera_cuda.cuda_malloc_f32(A.value.size)
                 dB_ptr = seera_cuda.cuda_malloc_f32(B.value.size)
