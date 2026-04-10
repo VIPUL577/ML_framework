@@ -1,6 +1,6 @@
 from Seera_Engine import Tensor, np, autograd4nn
-from Seera_init import _where, _is_gpu
 from cuTen import cuten
+from Seera_init import _where, _is_gpu
 import matplotlib.pyplot as plt
 import pickle
 
@@ -949,18 +949,21 @@ class Loss:
         """Binary Cross-Entropy (element-wise, averaged over batch)."""
         return (-y * (y_pred + epsilon).log() - (1 - y) * ((1 - y_pred + epsilon).log())).mean()
 
-    def categorical_cross_entropy(self, y_pred, y, epsilon=1e-15):
+    def categorical_cross_entropy(self, y_pred, y, epsilon=1e-7):
         """Categorical Cross-Entropy (averaged over batch).
         y_pred: (N, C)  softmax output
         y:      (N, C)  one-hot labels
         Returns scalar loss (mean over batch)."""
-        # -sum_c( y * log(y_pred + eps) ) summed over classes, then mean over batch
-        per_sample = (-y * (y_pred.log())).sum(axis=-1)
-        # print("#"*30)
-        # print(y_pred)
-        # print("#"*30)
-        return per_sample.mean()
-
+        # Clip predictions to [epsilon, 1-epsilon] to prevent log(0)=-inf and log(1)=0y
+        
+        y_pred_clipped = y_pred.clip(epsilon, 1.0 - epsilon)
+        per_sample = (-y * (y_pred_clipped.log())).sum(axis=-1)
+        out = per_sample.mean()
+        # print(per_sample.mean().value.to_host_f32()[0])
+        # if per_sample.mean().value.to_host_f32() == 0:
+        #     print(f"{y_pred}-\njojo{y}")
+            
+        return out
 
 # ─────────────────────────────────────────────────────────────
 # SGD Optimizer (GPU-native when device=cuda)

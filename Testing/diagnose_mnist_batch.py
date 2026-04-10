@@ -27,10 +27,10 @@ batch_size = 16
 
 model = Sequential([
     Input((1, 28, 28)),
-    # Conv2D(8, 1, (3, 3), activation="relu", stride=1, zero_padding=1),
-    # MaxPool2D(pool_size=(2, 2), stride=2),
-    # Conv2D(16, 8, (3, 3), activation="relu", stride=1, zero_padding=1),
-    # MaxPool2D(pool_size=(2, 2), stride=2),
+    Conv2D(8, 1, (3, 3), activation="relu", stride=1, zero_padding=1),
+    MaxPool2D(pool_size=(2, 2), stride=2),
+    Conv2D(16, 8, (3, 3), activation="relu", stride=1, zero_padding=1),
+    MaxPool2D(pool_size=(2, 2), stride=2),
     Flatten(),
     Dense(16*7*7, 32, activation="relu"),
     Dense(32, 16, activation="relu"),

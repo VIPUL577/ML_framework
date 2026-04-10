@@ -54,11 +54,6 @@ namespace seera_cuda
                             mask[input_idx] = 0;
                         }
                     }
-                    // else
-                    // {
-                    //     if (temp <= 0.0f)
-                    //         temp = 0.0f;
-                    // }
                 }
             }
             int h_in = h_out * stride_h - pad_h + rmax;

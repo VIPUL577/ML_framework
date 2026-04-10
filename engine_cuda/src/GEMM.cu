@@ -10,7 +10,7 @@ namespace seera_cuda
 {
   using namespace nvcuda;
 
-  __global__ void matmul_wmma_bound(float *A, float *B, float *C, int M, int N,
+   __global__ void matmul_wmma_bound(float *A, float *B, float *C, int M, int N,
                                     int K)
   {
     int warpM = blockIdx.y * 16;
@@ -98,7 +98,6 @@ namespace seera_cuda
 
     dim3 block(32);
     dim3 grid((N + 15) / 16, (M + 15) / 16, Nbatch);
-
     matmul_wmma_bound<<<grid, block>>>(hA, hB, hC, M, N, K);
     cudaDeviceSynchronize();
   }
