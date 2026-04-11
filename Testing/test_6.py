@@ -1,3 +1,6 @@
+
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 from Seera import Sequential, Input, Dense, Conv2D, Flatten, Loss, SGD, Adam
 from Seera_init import tensor as Tensor
@@ -128,7 +131,6 @@ def test_4_single_batch_overfit():
             if epoch == 0:
                 initial_loss = loss_val
             final_loss = loss_val
-            
             model.zero_grad()
             autograd4nn(loss)
             opt.step()

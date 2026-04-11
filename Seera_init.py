@@ -130,12 +130,20 @@ class tensor(node):
             else:
                 result = self.value + other.value
             out = tensor(result)
-            child_grad = [
-                [self.value, np.ones_like(self.value)],
-                [other.value, np.ones_like(other.value)],
-            ]
-            out.node.child_grad = np.array(child_grad, dtype=object)
-
+            # child_grad = [
+            #     [self.value, np.ones_like(self.value)],
+            #     [other.value, np.ones_like(other.value)],
+            # ]
+            arr = np.empty(4, dtype=object)
+            flat = [self.value, np.ones_like(self.value), other.value, np.ones_like(other.value)]
+            for i, x in enumerate(flat):
+                arr[i] = x
+            arr = arr.reshape(2, 2)
+            # print(self.value.shape)
+            # print(np.array(child_grad,dtype=object).shape)
+            # print(out.node.child_grad.shape)
+            
+            out.node.child_grad = arr
         out.node.out = out.value
         out.node.child = [self, other]
         return out
@@ -673,6 +681,7 @@ class tensor(node):
         if gpu:
             if len(self.value.shape)==3:
                 self.value.shape = (1,)+ self.value.shape
+                
             result = self.value.conv2d(W.value, strideh=strideh, stridew=stridew,
                                        padh=padh, padw=padw)
             out = tensor(result)
@@ -999,6 +1008,9 @@ class tensor(node):
         if self.value.size == 1:
             return self.value.item()
         raise ValueError("Can only convert tensors with a single element to Python scalars")
+
+    def __del__(self):
+        del self.value
 
     def __repr__(self):
         if _is_gpu(self.value):

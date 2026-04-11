@@ -33,7 +33,7 @@ namespace seera_cuda
         int c = blockIdx.y;
         int batchN = blockIdx.z;
         int H_out = sh * H;
-        int W_out = sh * W;
+        int W_out = sw * W;
         if (h >= 0 && h < H && w >= 0 && w < W)
         {
             float temp = 0.0f;

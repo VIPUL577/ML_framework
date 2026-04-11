@@ -12,6 +12,7 @@ from Seera import (
     Input, Conv2D, MaxPool2D, Flatten, Dense,
     Sequential, Loss, Adam,
 )
+from Seera_Engine import autograd4nn
 
 # ─────────────────────────────────────────────────────────────
 # 1. Load MNIST data
@@ -45,7 +46,7 @@ def main():
     print("=" * 60)
 
     X_train, y_train, X_test, y_test, y_test_labels = load_mnist(
-        num_train=200, num_test=50
+        num_train=20000, num_test=6000
     )
     print(f"Train: {X_train.shape}, Test: {X_test.shape}")
 
@@ -62,18 +63,43 @@ def main():
     ], device="cuda")
     model.summary()
 
-    # ─── Train ───────────────────────────────────────────────
     loss_fn = Loss()
-    optimizer = Adam(model, lr=0.001)
+    optimizer = Adam(model, lr=1e-4)
+        # ─── Train ───────────────────────────────────────────────
+    batch_size = 16
+    epochs = 2  
+    loss_track = 0.0
+    print(type(model))
+    for epoch in range(epochs):
+        epoch_loss = 0.0
+        n_batches = 0
+        for i in range(0, 20000, batch_size):
+            x_batch, y_batch = X_train[i:i+batch_size], y_train[i:i+batch_size]
+            X_batch = Tensor(x_batch, is_leaf=True, device="cuda")
+            Y_batch = Tensor(y_batch, device="cuda")
+            
+            
+            pred = model.forward(X_batch)
+            loss = loss_fn.categorical_cross_entropy(pred, Y_batch)
+            if(float(loss.value.to_host_f32().ravel()[0])==0):
+                
+                print(X_batch.value.to_host_f32().sum())
+                print(Y_batch.value.to_host_f32())
+            loss_val = float(loss.value.to_host_f32().ravel()[0])
+            epoch_loss += loss_val
+            n_batches += 1
+            # print(Y_batch.sum())
+            
+            del(X_batch)
+            del(Y_batch)
 
-    history = model.fit(
-        X_train, y_train,
-        Optimizer=optimizer,
-        Loss=loss_fn.categorical_cross_entropy,
-        Epochs=5,
-        batch_size=16,
-        Loss_interval=1,
-    )
+            model.zero_grad()
+            autograd4nn(loss)
+            optimizer.step()
+        
+        
+        avg_loss = epoch_loss / n_batches
+        print(f"EPOCH {epoch+1}/{epochs}: Loss: {avg_loss:.10f}")
 
     # ─── Evaluate ────────────────────────────────────────────
     correct = 0

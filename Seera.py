@@ -250,6 +250,7 @@ class Conv2D(Layer):
                 self.bais = Tensor.zeros((1, self.out_channels, 1, 1), device="cuda")
             else:
                 self.bais = Tensor.zeros((1, self.out_channels, 1, 1))
+                # print(self.bais.shape)
 
         self.z = Tensor.conv2d(
             self.inputs, self.weights, stride=self.stride, padding=self.zero_padding
@@ -704,6 +705,8 @@ class Sequential:
             if hasattr(layer, "update_params"):
                 bk = _where(layer.weights.value)
                 if bk is cuten:
+                    del layer.weights.node.cp
+                    del layer.bais.node.cp
                     layer.weights.node.cp = cuten.zeros_like(layer.weights.value)
                     layer.bais.node.cp = cuten.zeros_like(layer.bais.value)
                 else:

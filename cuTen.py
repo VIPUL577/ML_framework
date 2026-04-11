@@ -545,6 +545,8 @@ class cuten:
     def conv2d(self, kernel: cuten, strideh: int = 1, stridew: int = 1,
                padh: int = 0, padw: int = 0) -> cuten:
         """Forward conv2d. self is image (N,C,H,W), kernel is (F,C,KH,KW)."""
+        
+        
         if len(self.shape) != 4 or len(kernel.shape) != 4:
             raise ValueError("[cuTen]: conv2d expects 4-D tensors (N,C,H,W) and (F,C,KH,KW)")
 
@@ -565,6 +567,7 @@ class cuten:
         result.main_ptr = out_ptr
         result.shape = out_shape
         result.size = out_size
+        
         return result
 
     # ==================================================================
@@ -600,7 +603,6 @@ class cuten:
         mask.main_ptr = mask_ptr
         mask.shape = self.shape
         mask.size = self.size
-
         return result, mask
 
     # ==================================================================
@@ -797,7 +799,7 @@ class cuten:
     # 20) Flatten input should be batched
     # ================================================================== 
     def flatten(self):
-        
+        # print(self.shape)
         return self.reshape((self.shape[0], int(self.size/self.shape[0])))
             
                  
