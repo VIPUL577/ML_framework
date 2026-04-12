@@ -10,7 +10,7 @@
 
 ---
 
-Seera is a from-scratch deep learning framework written in Python, C++ and CUDA. It features a complete autograd engine, a high-level Keras-style API for building and training neural networks, and a set of hand-written CUDA kernels that leverage **NVIDIA Tensor Cores (WMMA)** for matrix multiplication, convolution, and transposed convolution. The framework supports seamless CPU and GPU execution — tensors, layers, optimizers, and the entire backward pass all operate directly on device memory without host round-trips.
+Seera is a from-scratch deep learning framework written in Python, C++ and CUDA. It features a complete autograd engine, a high-level Keras-style API for building and training neural networks, and a set of hand-written CUDA kernels that uses **WMMA** for matrix multiplication, convolution, and transposed convolution. The framework supports seamless CPU and GPU execution — tensors, layers, optimizers, and the entire backward pass all operate directly on device memory without host round-trips.
 
 
 
